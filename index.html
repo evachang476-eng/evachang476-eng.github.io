@@ -2350,10 +2350,20 @@ function idbOpen() { return new Promise((res, rej) => { try { const r = indexedD
 function idbDo(mode, fn) { return new Promise((res, rej) => { const t = db.transaction('media', mode); const req = fn(t.objectStore('media')); t.oncomplete = () => res(req ? req.result : undefined); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); }); }
 async function saveMediaRec(rec) { if (!db) return; try { await idbDo('readwrite', st => st.put(rec)); } catch (e) { toast('', `「${rec.name}」太大或瀏覽器空間不足，重新整理後會不見`); } }
 async function deleteMediaRec(id) { if (!db) return; try { await idbDo('readwrite', st => st.delete(id)); } catch (e) { } }
-const projectData = () => ({ S, ranges, playhead, src: src.media });
+const projectData = () => ({ S, ranges, playhead, src: src.media, pps, sel });
+let lastHist = '';
+function saveHistory() {
+  // keep ⌘Z / ⇧⌘Z working after a refresh; trim the oldest steps if the browser runs out of room
+  const sig = undoStack.length + '|' + redoStack.length + '|' + (undoStack[undoStack.length - 1] || '').length + '|' + (redoStack[redoStack.length - 1] || '').length;
+  if (sig === lastHist) return;
+  for (const n of [80, 40, 20, 10, 3]) {
+    try { localStorage.setItem('fcp-practice-history', JSON.stringify({ u: undoStack.slice(-n), r: redoStack.slice(-n) })); lastHist = sig; return; } catch (e) { }
+  }
+}
 function saveProject() {
   if (!restored) return;
   try { const s = JSON.stringify(projectData()); if (s !== lastSaved) { localStorage.setItem('fcp-practice-project', s); lastSaved = s; } } catch (e) { }
+  saveHistory();
 }
 async function restore() {
   let recs = [];
@@ -2367,13 +2377,23 @@ async function restore() {
     S.connected = (S.connected || []).filter(c => ok(c) && S.primary.some(x => x.uid === c.anchor));
     Object.assign(ranges, p.ranges || {}); playhead = +p.playhead || 0;
     if (p.src && MEDIA[p.src]) src.media = p.src;
+    if (+p.pps > 0) pps = +p.pps;
+    if (p.sel != null && findClip(p.sel)) sel = p.sel;
+    try {
+      const h = JSON.parse(localStorage.getItem('fcp-practice-history') || 'null');
+      // drop history steps that use media this browser no longer has
+      const good = x => { try { const s = JSON.parse(x); return [...s.primary, ...(s.connected || [])].every(ok); } catch (e) { return false; } };
+      if (h && Array.isArray(h.u) && Array.isArray(h.r)) { undoStack = h.u.filter(x => typeof x === 'string' && good(x)); redoStack = h.r.filter(x => typeof x === 'string' && good(x)); }
+    } catch (e) { }
   }
   restored = true; lastSaved = JSON.stringify(projectData());
+  lastHist = undoStack.length + '|' + redoStack.length + '|' + (undoStack[undoStack.length - 1] || '').length + '|' + (redoStack[redoStack.length - 1] || '').length;
   refreshMedia(); fullRender();
   if (recs.length || S.primary.length || S.connected.length) toast('', '已還原上次的素材和時間線');
 }
-setInterval(saveProject, 1500);
+setInterval(saveProject, 500);
 window.addEventListener('pagehide', saveProject);
+window.addEventListener('beforeunload', saveProject);
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveProject(); });
 /* keep the last decoded frame of each imported video so a seek never shows black */
 function hookVideo(m) {

@@ -275,6 +275,8 @@ svg.i { width: 16px; height: 16px; display: block; fill: none; stroke: currentCo
 .ep h4 span { color: var(--muted); font-weight: 400; font-size: 12px; margin-right: 6px; }
 .ep p { font-size: 12.5px; color: var(--muted); }
 .ep ul { margin: 0; padding-left: 1.2em; font-size: 12.5px; }
+.ep ol.steps { margin: 6px 0 8px; padding-left: 1.4em; font-size: 12.5px; line-height: 1.75; }
+.ep ol.steps kbd { margin-right: 2px; }
 .ep .tag { font-size: 11px; color: var(--ok); }
 .ep .tag.no { color: var(--muted); }
 #modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: grid; place-items: center; z-index: 70; padding: 16px; }
@@ -847,6 +849,121 @@ const DRAW = {
     c.strokeStyle = '#33403a'; c.lineWidth = 2;
     for (let i = 0; i < 4; i++) { const x = ((t * 60 + i * 140) % (w + 100)) - 50, y = h * .2 + i * 18 + Math.sin(t * 3 + i) * 6, f = Math.sin(t * 9 + i) * 5; c.beginPath(); c.moveTo(x - 9, y - f); c.lineTo(x, y); c.lineTo(x + 9, y - f); c.stroke(); }
   },
+  sunset(c, t, w, h) {
+    const g = c.createLinearGradient(0, 0, 0, h * .7); g.addColorStop(0, '#2b1b4a'); g.addColorStop(.45, '#c4486a'); g.addColorStop(1, '#ffb25c'); c.fillStyle = g; c.fillRect(0, 0, w, h);
+    const sy = h * .42 + t * 6; const sg = c.createRadialGradient(w * .5, sy, 10, w * .5, sy, h * .35); sg.addColorStop(0, 'rgba(255,240,190,1)'); sg.addColorStop(.2, 'rgba(255,200,120,.9)'); sg.addColorStop(1, 'rgba(255,140,80,0)');
+    c.fillStyle = sg; c.fillRect(0, 0, w, h); c.fillStyle = '#fff4d6'; c.beginPath(); c.arc(w * .5, sy, h * .07, 0, 7); c.fill();
+    [['#6b2f55', .62, .004, 4], ['#45203f', .7, .007, 9], ['#24122a', .8, .011, 16]].forEach(([col, b, f, sp]) => {
+      c.fillStyle = col; c.beginPath(); c.moveTo(0, h);
+      for (let x = 0; x <= w; x += 8) { const X = x + t * sp; c.lineTo(x, h * b - Math.abs(Math.sin(X * f)) * 70 - Math.sin(X * f * 3.1) * 14); }
+      c.lineTo(w, h); c.fill();
+    });
+    c.strokeStyle = '#1a0f1c'; c.lineWidth = 2;
+    for (let i = 0; i < 5; i++) { const x = ((t * 45 + i * 120) % (w + 100)) - 50, y = h * .25 + i * 14 + Math.sin(t * 2 + i) * 5, f = Math.sin(t * 8 + i) * 5; c.beginPath(); c.moveTo(x - 8, y - f); c.lineTo(x, y); c.lineTo(x + 8, y - f); c.stroke(); }
+  },
+  rain(c, t, w, h) {
+    const g = c.createLinearGradient(0, 0, 0, h); g.addColorStop(0, '#1d2733'); g.addColorStop(1, '#0e1319'); c.fillStyle = g; c.fillRect(0, 0, w, h);
+    let r = seeded(11);
+    for (let x = 0; x < w;) { const bw = 70 + r() * 90, bh = h * (.3 + r() * .35); c.fillStyle = '#151c25'; c.fillRect(x, h * .72 - bh, bw - 6, bh); for (let wy = h * .72 - bh + 14; wy < h * .7; wy += 22) for (let wx = x + 8; wx < x + bw - 16; wx += 18) if (r() > .55) { c.fillStyle = 'rgba(255,200,120,.6)'; c.fillRect(wx, wy, 8, 10); } x += bw; }
+    c.fillStyle = '#20262e'; c.fillRect(0, h * .72, w, h * .28);
+    for (const lx of [w * .2, w * .62]) { const lg = c.createRadialGradient(lx, h * .4, 2, lx, h * .4, 120); lg.addColorStop(0, 'rgba(255,220,150,.55)'); lg.addColorStop(1, 'rgba(255,220,150,0)'); c.fillStyle = lg; c.fillRect(lx - 120, h * .4 - 120, 240, 240); c.fillStyle = '#0b0e12'; c.fillRect(lx - 3, h * .4, 6, h * .32); c.fillStyle = 'rgba(255,220,150,.18)'; c.fillRect(lx - 30, h * .74, 60, h * .2); }
+    const px = ((t * 70) % (w + 240)) - 120, step = Math.sin(t * 7) * 8;
+    c.fillStyle = '#0a0d11'; c.fillRect(px - 10, h * .52, 20, h * .2); c.fillRect(px - 8 + step / 2, h * .7, 7, h * .08); c.fillRect(px + 1 - step / 2, h * .7, 7, h * .08);
+    c.fillStyle = '#b43c3c'; c.beginPath(); c.ellipse(px, h * .5, 60, 26, 0, Math.PI, 0); c.fill(); c.strokeStyle = '#0a0d11'; c.lineWidth = 2; c.beginPath(); c.moveTo(px, h * .5); c.lineTo(px, h * .58); c.stroke();
+    c.strokeStyle = 'rgba(200,215,235,.45)'; c.lineWidth = 1.2; r = seeded(5);
+    for (let i = 0; i < 220; i++) { const x = (r() * w + t * 60) % w, y = (r() * h + t * (700 + r() * 300)) % h; c.beginPath(); c.moveTo(x, y); c.lineTo(x - 4, y + 18); c.stroke(); }
+    c.strokeStyle = 'rgba(200,215,235,.35)'; r = seeded(9);
+    for (let i = 0; i < 10; i++) { const ph = (t * 1.3 + r()) % 1, x = r() * w, y = h * (.78 + r() * .2); c.globalAlpha = 1 - ph; c.beginPath(); c.ellipse(x, y, 4 + ph * 26, 1 + ph * 6, 0, 0, 7); c.stroke(); }
+    c.globalAlpha = 1;
+  },
+  cafe(c, t, w, h) {
+    const g = c.createLinearGradient(0, 0, 0, h); g.addColorStop(0, '#3b2a20'); g.addColorStop(1, '#1d140f'); c.fillStyle = g; c.fillRect(0, 0, w, h);
+    const r = seeded(21); for (let i = 0; i < 14; i++) { const x = r() * w, y = r() * h * .5, rad = 20 + r() * 40; c.fillStyle = `rgba(255,${180 + r() * 60 | 0},120,${.08 + .08 * Math.sin(t + i)})`; c.beginPath(); c.arc(x + Math.sin(t * .3 + i) * 10, y, rad, 0, 7); c.fill(); }
+    const tg = c.createLinearGradient(0, h * .7, 0, h); tg.addColorStop(0, '#8a5a36'); tg.addColorStop(1, '#5a3a22'); c.fillStyle = tg; c.fillRect(0, h * .7, w, h * .3);
+    const cx = w * .5 + Math.sin(t * .4) * 10;
+    c.fillStyle = '#e9e4dc'; c.beginPath(); c.ellipse(cx, h * .8, 170, 30, 0, 0, 7); c.fill();
+    c.fillStyle = '#f6f2ea'; rr(c, cx - 105, h * .44, 210, h * .34, 30); c.fill();
+    c.strokeStyle = '#f6f2ea'; c.lineWidth = 18; c.beginPath(); c.arc(cx + 120, h * .6, 38, -1.2, 1.2); c.stroke();
+    c.fillStyle = '#6b3f22'; c.beginPath(); c.ellipse(cx, h * .45, 100, 20, 0, 0, 7); c.fill();
+    c.fillStyle = '#e8cfa8'; c.beginPath(); c.ellipse(cx, h * .45, 42, 9, 0, 0, 7); c.fill(); c.beginPath(); c.ellipse(cx - 10, h * .45, 22, 6, 0, 0, 7); c.fillStyle = '#6b3f22'; c.fill();
+    c.strokeStyle = 'rgba(255,255,255,.18)'; c.lineWidth = 6;
+    for (let k = 0; k < 3; k++) { c.beginPath(); for (let y = 0; y < 150; y += 6) { const x = cx - 40 + k * 40 + Math.sin(y * .05 + t * 2 + k) * 14; const yy = h * .4 - y - ((t * 30) % 20); y ? c.lineTo(x, yy) : c.moveTo(x, yy); } c.stroke(); }
+  },
+  runner(c, t, w, h) {
+    const g = c.createLinearGradient(0, 0, 0, h * .55); g.addColorStop(0, '#7fc3ee'); g.addColorStop(1, '#d9eef7'); c.fillStyle = g; c.fillRect(0, 0, w, h * .55);
+    c.fillStyle = '#5a6b7c'; for (let x = -((t * 40) % 80); x < w; x += 80) { c.fillRect(x, h * .3, 70, h * .25); c.fillStyle = '#6d7f91'; c.fillRect(x + 6, h * .34, 58, 8); c.fillStyle = '#5a6b7c'; }
+    c.fillStyle = '#3f8f4a'; c.fillRect(0, h * .55, w, h * .08);
+    c.fillStyle = '#c4553d'; c.fillRect(0, h * .63, w, h * .37);
+    c.strokeStyle = 'rgba(255,255,255,.8)'; c.lineWidth = 3; for (let i = 0; i < 4; i++) { c.beginPath(); c.moveTo(0, h * (.66 + i * .09)); c.lineTo(w, h * (.66 + i * .09)); c.stroke(); }
+    c.fillStyle = 'rgba(255,255,255,.8)'; for (let x = -((t * 420) % 240); x < w; x += 240) c.fillRect(x, h * .7, 50, 4);
+    const cx = w * .45, by = h * .74, s = Math.sin(t * 9), bob = Math.abs(Math.cos(t * 9)) * 8;
+    const limb = (x0, y0, a, l1, a2, l2, col, lw) => { c.strokeStyle = col; c.lineWidth = lw; c.lineCap = 'round'; const x1 = x0 + Math.sin(a) * l1, y1 = y0 + Math.cos(a) * l1; c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.lineTo(x1 + Math.sin(a + a2) * l2, y1 + Math.cos(a + a2) * l2); c.stroke(); };
+    const hip = by - 120 - bob, sh = hip - 85;
+    limb(cx, hip, -s * .8, 60, -.2 - Math.max(0, s) * 1.2, 60, '#1b2a44', 14); limb(cx, sh, s * .9, 45, 1.4, 40, '#e0a77e', 10);
+    c.strokeStyle = '#ff7a1a'; c.lineWidth = 26; c.beginPath(); c.moveTo(cx, hip); c.lineTo(cx + 12, sh); c.stroke();
+    limb(cx, hip, s * .8, 60, -.2 - Math.max(0, -s) * 1.2, 60, '#24375a', 14); limb(cx + 10, sh, -s * .9, 45, 1.4, 40, '#e8b48a', 10);
+    c.fillStyle = '#e8b48a'; c.beginPath(); c.arc(cx + 18, sh - 28, 22, 0, 7); c.fill(); c.fillStyle = '#2b1d14'; c.beginPath(); c.arc(cx + 14, sh - 34, 22, Math.PI, 0); c.fill();
+    c.strokeStyle = 'rgba(255,255,255,.5)'; c.lineWidth = 2; for (let i = 0; i < 5; i++) { const y = sh + i * 30, x = cx - 70 - ((t * 300 + i * 40) % 120); c.beginPath(); c.moveTo(x, y); c.lineTo(x - 50, y); c.stroke(); }
+  },
+  snow(c, t, w, h) {
+    const g = c.createLinearGradient(0, 0, 0, h); g.addColorStop(0, '#9fb7cf'); g.addColorStop(1, '#e8eef4'); c.fillStyle = g; c.fillRect(0, 0, w, h);
+    c.fillStyle = '#f7fafc'; c.beginPath(); c.moveTo(0, h * .6); c.lineTo(w * .25, h * .25); c.lineTo(w * .42, h * .5); c.lineTo(w * .6, h * .18); c.lineTo(w * .85, h * .55); c.lineTo(w, h * .42); c.lineTo(w, h); c.lineTo(0, h); c.fill();
+    c.fillStyle = '#c9d6e3'; c.beginPath(); c.moveTo(w * .6, h * .18); c.lineTo(w * .7, h * .32); c.lineTo(w * .64, h * .4); c.lineTo(w * .55, h * .3); c.fill();
+    c.fillStyle = '#ffffff'; c.fillRect(0, h * .72, w, h * .28);
+    for (let k = 0; k < 9; k++) { const x = ((k * 130 - t * 12) % (w + 160) + w + 160) % (w + 160) - 80, y = h * .78; c.fillStyle = '#2e5741'; for (let j = 0; j < 3; j++) { c.beginPath(); c.moveTo(x, y - 110 + j * 30); c.lineTo(x - 30 + j * 4, y - 40 + j * 22); c.lineTo(x + 30 - j * 4, y - 40 + j * 22); c.fill(); } c.fillStyle = '#fff'; c.beginPath(); c.moveTo(x, y - 110); c.lineTo(x - 10, y - 88); c.lineTo(x + 10, y - 88); c.fill(); }
+    const r = seeded(3); c.fillStyle = '#fff';
+    for (let i = 0; i < 160; i++) { const sz = 1 + r() * 3, x = (r() * w + Math.sin(t + i) * 20 + t * 15) % w, y = (r() * h + t * (30 + sz * 25)) % h; c.globalAlpha = .6 + r() * .4; c.beginPath(); c.arc(x, y, sz, 0, 7); c.fill(); }
+    c.globalAlpha = 1;
+  },
+  fireworks(c, t, w, h) {
+    c.fillStyle = '#05060f'; c.fillRect(0, 0, w, h);
+    const r = seeded(77); c.fillStyle = '#fff'; for (let i = 0; i < 50; i++) { c.globalAlpha = .2 + .3 * r(); c.fillRect(r() * w, r() * h * .6, 2, 2); } c.globalAlpha = 1;
+    c.fillStyle = '#0c0f1c'; for (let x = 0; x < w; x += 50) c.fillRect(x, h * (.82 + ((x * 7) % 5) / 100), 46, h);
+    const cols = ['#ff5a5a', '#ffd25a', '#5ad1ff', '#b97bff', '#7dff8a'];
+    for (let k = 0; k < 5; k++) {
+      const T = t + k * .75, cyc = Math.floor(T / 3.75), ph = T % 3.75, rs = seeded(cyc * 13 + k * 7 + 1), bx = w * (.15 + rs() * .7), by = h * (.18 + rs() * .3), col = cols[(cyc + k) % 5];
+      if (ph < .8) { const y = h - (h - by) * (ph / .8); c.fillStyle = '#ffe9b0'; c.fillRect(bx - 1.5, y, 3, 10); continue; }
+      const p = ph - .8, rad = 140 * (1 - Math.exp(-p * 2.2)), a = Math.max(0, 1 - p / 2.6);
+      c.fillStyle = col; c.globalAlpha = a;
+      for (let i = 0; i < 40; i++) { const ang = i / 40 * Math.PI * 2, x = bx + Math.cos(ang) * rad, y = by + Math.sin(ang) * rad + p * p * 14; c.beginPath(); c.arc(x, y, 2.6, 0, 7); c.fill(); }
+      c.globalAlpha = 1;
+    }
+  },
+  talk2(c, t, w, h) {
+    // the same speaker as「訪談」, filmed closer from the side: the mouth moves in sync, for multicam practice
+    c.fillStyle = '#2f3c4a'; c.fillRect(0, 0, w, h);
+    const r = seeded(8); for (let row = 0; row < 3; row++) { c.fillStyle = '#4a3828'; c.fillRect(w * .58, h * (.12 + row * .26), w * .4, 10); for (let x = w * .6; x < w * .96; x += 18 + r() * 10) { c.fillStyle = `hsl(${r() * 360},35%,${35 + r() * 20}%)`; const bh = 50 + r() * 40; c.fillRect(x, h * (.12 + row * .26) - bh, 14, bh); } }
+    c.fillStyle = 'rgba(255,220,160,.12)'; c.beginPath(); c.arc(w * .2, h * .3, 160, 0, 7); c.fill();
+    const cx = w * .38 + Math.sin(t * .7) * 8, hy = h * .42;
+    c.fillStyle = '#2d4a6b'; c.beginPath(); c.moveTo(cx - w * .3, h); c.quadraticCurveTo(cx - w * .22, h * .78, cx, h * .76); c.quadraticCurveTo(cx + w * .2, h * .78, cx + w * .26, h); c.fill();
+    c.fillStyle = '#e2b48c'; c.fillRect(cx - 34, hy + 80, 68, h * .76 - hy - 70);
+    c.beginPath(); c.ellipse(cx, hy, h * .2, h * .25, 0, 0, 7); c.fill();
+    c.fillStyle = '#2b1d14'; c.beginPath(); c.ellipse(cx - 10, hy - h * .1, h * .21, h * .17, -.15, Math.PI, 0); c.fill();
+    const blink = (t % 3.2) < .12; c.fillStyle = '#2b1d14';
+    if (blink) c.fillRect(cx + h * .06 - 10, hy - 6, 20, 3); else { c.beginPath(); c.arc(cx + h * .07, hy - 5, 6, 0, 7); c.fill(); }
+    const m = Math.abs(Math.sin(t * 11)) * Math.abs(Math.sin(t * 2.3)) * 16 + 3;
+    c.fillStyle = '#8a3b3b'; c.beginPath(); c.ellipse(cx + h * .09, hy + h * .12, 16, m / 2, 0, 0, 7); c.fill();
+  },
+  green(c, t, w, h) {
+    c.fillStyle = '#00f000'; c.fillRect(0, 0, w, h);
+    if (arguments[4]) return;
+    const cx = w * .5 + Math.sin(t * .9) * 40, hy = h * .36, wave = Math.sin(t * 5) * .6;
+    c.fillStyle = '#7a2e8c'; c.beginPath(); c.moveTo(cx - w * .14, h); c.quadraticCurveTo(cx - w * .13, h * .6, cx, h * .58); c.quadraticCurveTo(cx + w * .13, h * .6, cx + w * .14, h); c.fill();
+    c.strokeStyle = '#7a2e8c'; c.lineWidth = 30; c.lineCap = 'round'; c.beginPath(); c.moveTo(cx + w * .1, h * .64); c.lineTo(cx + w * .2, h * .44); c.lineTo(cx + w * .2 + Math.sin(wave) * 70, h * .44 - Math.cos(wave) * 70); c.stroke();
+    c.fillStyle = '#e2b48c'; c.beginPath(); c.arc(cx + w * .2 + Math.sin(wave) * 80, h * .44 - Math.cos(wave) * 80, 18, 0, 7); c.fill();
+    c.fillRect(cx - 18, hy + 50, 36, h * .58 - hy - 45); c.beginPath(); c.ellipse(cx, hy, h * .11, h * .14, 0, 0, 7); c.fill();
+    c.fillStyle = '#1b130e'; c.beginPath(); c.ellipse(cx, hy - h * .05, h * .118, h * .1, 0, Math.PI, 0); c.fill();
+    c.beginPath(); c.arc(cx - 16, hy - 2, 4, 0, 7); c.arc(cx + 16, hy - 2, 4, 0, 7); c.fill();
+    c.strokeStyle = '#8a3b3b'; c.lineWidth = 4; c.beginPath(); c.arc(cx, hy + 22, 14, .2, Math.PI - .2); c.stroke();
+  },
+  countdown(c, t, w, h) {
+    c.fillStyle = '#7d7d7d'; c.fillRect(0, 0, w, h);
+    const n = Math.max(1, 5 - Math.floor(t)), ph = t % 1;
+    c.fillStyle = '#5c5c5c'; c.beginPath(); c.moveTo(w / 2, h / 2); c.arc(w / 2, h / 2, w, -Math.PI / 2, -Math.PI / 2 + ph * Math.PI * 2); c.fill();
+    c.strokeStyle = '#e8e8e8'; c.lineWidth = 6; c.beginPath(); c.arc(w / 2, h / 2, h * .36, 0, 7); c.stroke(); c.beginPath(); c.arc(w / 2, h / 2, h * .3, 0, 7); c.stroke();
+    c.lineWidth = 3; c.beginPath(); c.moveTo(0, h / 2); c.lineTo(w, h / 2); c.moveTo(w / 2, 0); c.lineTo(w / 2, h); c.stroke();
+    c.fillStyle = '#111'; c.font = `700 ${h * .42}px "Noto Sans TC", sans-serif`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(String(n), w / 2, h / 2 + 6);
+  },
 };
 function drawAudioViz(c, t, label) {
   c.fillStyle = '#0d1410'; c.fillRect(0, 0, W, H);
@@ -862,6 +979,17 @@ const MEDIA = {
   product: { name: '產品特寫', type: 'video', dur: 8 },
   forest: { name: '森林', type: 'video', dur: 10 },
   music: { name: '背景音樂', type: 'audio', dur: 30 },
+  sunset: { name: '夕陽山景', type: 'video', dur: 12 },
+  rain: { name: '雨天街道', type: 'video', dur: 10 },
+  cafe: { name: '咖啡特寫', type: 'video', dur: 8 },
+  runner: { name: '跑步（練慢動作）', type: 'video', dur: 8 },
+  snow: { name: '雪山', type: 'video', dur: 10 },
+  fireworks: { name: '煙火', type: 'video', dur: 12 },
+  talk2: { name: '訪談・側面機位', type: 'video', dur: 15 },
+  green: { name: '綠幕人物（練去背）', type: 'video', dur: 10 },
+  countdown: { name: '倒數片頭', type: 'video', dur: 5 },
+  music2: { name: '輕快節奏', type: 'audio', dur: 30, notes: [392, 440, 523.25, 587.33, 523.25, 440, 392, 329.63], bps: 6, wave: 'square', decay: 4 },
+  music3: { name: '抒情鋼琴', type: 'audio', dur: 40, notes: [261.63, 329.63, 392, 493.88, 440, 349.23, 329.63, 293.66], bps: 2, wave: 'sine', decay: 1.2 },
 };
 const ORDER = Object.keys(MEDIA);
 const THUMB = {}, STRIP = {};
@@ -869,7 +997,7 @@ const THUMB = {}, STRIP = {};
   const cv = document.createElement('canvas'); cv.width = 192; cv.height = 108; const c = cv.getContext('2d');
   for (const id of ORDER) {
     c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, 192, 108); c.scale(192 / W, 108 / H);
-    if (MEDIA[id].type === 'audio') drawAudioViz(c, 1.3); else DRAW[id](c, MEDIA[id].dur * .3, W, H);
+    if (MEDIA[id].type === 'audio') drawAudioViz(c, 1.3, MEDIA[id].name); else DRAW[id](c, ({ countdown: 1.2, fireworks: 2.1 })[id] ?? MEDIA[id].dur * .3, W, H);
     THUMB[id] = cv.toDataURL('image/jpeg', .8);
   }
   const wv = document.createElement('canvas'); wv.width = 240; wv.height = 40; const w = wv.getContext('2d');
@@ -1137,12 +1265,13 @@ function updateMeters() {
   $('#mt-l').style.height = Math.min(100, mL * 100) + '%'; $('#mt-r').style.height = Math.min(100, mR * 100) + '%';
 }
 function updateAudio() {
-  if (!actx) return; let lvl = 0, st = null;
+  if (!actx) return; let lvl = 0, st = null, am = null;
   if (rate > 0 && soundOn) {
-    if (focus === 'browser') { if (MEDIA[src.media].type === 'audio' && !MEDIA[src.media].user) { st = src.t; lvl = 1; } }
-    else { const k = S.connected.find(k => kind(k) === 'audio' && !MEDIA[k.media].user && k.enabled && playhead >= k._start && playhead < k._start + len(k)); if (k && !roleOff.has(audioRole(k))) { st = srcAt(k, playhead - k._start); lvl = Math.pow(10, k.vol / 20) * fadeGain(k, playhead - k._start); } }
+    if (focus === 'browser') { if (MEDIA[src.media].type === 'audio' && !MEDIA[src.media].user) { st = src.t; lvl = 1; am = MEDIA[src.media]; } }
+    else { const k = S.connected.find(k => kind(k) === 'audio' && !MEDIA[k.media].user && k.enabled && playhead >= k._start && playhead < k._start + len(k)); if (k && !roleOff.has(audioRole(k))) { st = srcAt(k, playhead - k._start); lvl = Math.pow(10, k.vol / 20) * fadeGain(k, playhead - k._start); am = MEDIA[k.media]; } }
   }
-  if (st != null) { const beat = st * 4; osc.frequency.setTargetAtTime(NOTES[Math.floor(beat) % 8], actx.currentTime, .005); lvl *= .14 * Math.exp(-(beat % 1) * 2.5); } else lvl = 0;
+  // each built-in music track has its own notes, tempo, sound and decay
+  if (st != null) { const notes = am.notes || NOTES, beat = st * (am.bps || 4); if (osc.type !== (am.wave || 'triangle')) osc.type = am.wave || 'triangle'; osc.frequency.setTargetAtTime(notes[Math.floor(beat) % notes.length], actx.currentTime, .005); lvl *= .14 * Math.exp(-(beat % 1) * (am.decay || 2.5)); } else lvl = 0;
   meterSynth = lvl / .14;
   gn.gain.setTargetAtTime(lvl, actx.currentTime, .015);
 }
@@ -1155,7 +1284,7 @@ function drawSource(c, id, t) {
   if (m.compound) return drawCompound(c, m, t);
   if (m.mc) { if (MEDIA[m.angles[0]]) drawSource(c, m.angles[0], t); return; }
   if (proxyView && META.proxy[id] && !inProxy) return drawProxy(c, id, t);
-  if (!m.user) { if (m.type === 'audio') drawAudioViz(c, t); else DRAW[id](c, t, W, H); return; }
+  if (!m.user) { if (m.type === 'audio') drawAudioViz(c, t, m.name); else DRAW[id](c, t, W, H); return; }
   if (!m.ready) { c.fillStyle = 'rgba(255,255,255,.6)'; c.font = '600 26px "Noto Sans TC", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('載入中…', W / 2, H / 2); return; }
   if (m.type === 'audio') { drawAudioViz(c, t, m.name); return; }
   if (m.img) return drawFit(c, m.el, m.w, m.h);
@@ -2102,10 +2231,11 @@ async function renderTimelineAudio(dur) {
       s.stop(p1);
     } else if (mm.type === 'audio') {
       // the built-in music: same notes as the live preview
-      const o = oc.createOscillator(); o.type = 'triangle'; const f = oc.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 1800;
+      const notes = mm.notes || NOTES, bps = mm.bps || 4, decay = mm.decay || 2.5;
+      const o = oc.createOscillator(); o.type = mm.wave || 'triangle'; const f = oc.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 1800;
       const env = oc.createGain(), st = u => heardAt(k, lt(p0 + u * (p1 - p0)));
-      o.frequency.setValueCurveAtTime(curve(n, u => NOTES[((Math.floor(st(u) * 4) % 8) + 8) % 8]), p0, p1 - p0);
-      env.gain.setValueCurveAtTime(curve(n, u => { const b = st(u) * 4; return .14 * Math.exp(-(((b % 1) + 1) % 1) * 2.5); }), p0, p1 - p0);
+      o.frequency.setValueCurveAtTime(curve(n, u => notes[((Math.floor(st(u) * bps) % notes.length) + notes.length) % notes.length]), p0, p1 - p0);
+      env.gain.setValueCurveAtTime(curve(n, u => { const b = st(u) * bps; return .14 * Math.exp(-(((b % 1) + 1) % 1) * decay); }), p0, p1 - p0);
       o.connect(f).connect(env).connect(gain); o.start(p0); o.stop(p1);
     }
   };
@@ -2329,7 +2459,7 @@ function buildFxLists() {
 }
 function addFx(c, t) {
   edit(() => { c.fx = c.fx || []; if (!c.fx.some(f => f.type === t)) c.fx.push({ type: t, amt: FX[t].def ?? 0, color: t === 'key' ? '#00ff00' : undefined }); sel = c.uid; });
-  toast('', `套用「${FX[t].name}」，在右邊檢查器調整強度`); mark('fx');
+  toast('', `套用「${FX[t].name}」，在右邊檢查器調整強度`); mark('fx'); if (t === 'scenemask') mark('scenemask'); if (t === 'key' && mediaOf(c) === 'green') mark('greenkey');
 }
 function applyFxTo(c, t) {
   if (!c || !(kind(c) === 'video' || kind(c) === 'title')) return toast('', '效果只能加在影片或字幕片段上');
@@ -3945,6 +4075,69 @@ MISSIONS.push(
   { id: 'magmask', adv: 1, t: () => `<b>Louis 1:50 磁性遮罩</b>　把 Magnetic Mask 加到訪談片段，在檢查器框住人、按 Analyze` },
   { id: 'optflow', adv: 1, t: () => `<b>Louis 2:40 光流</b>　把一段片段改成 Slow 25%，再到 Retime › Video Quality 選 Optical Flow，播放比較` },
   { id: 'compressor', adv: 1, t: () => `<b>Louis 5:40 Compressor</b>　File › Send to Compressor…，選 Instagram Reels 或自己調 Data Rate，按 Start Batch` },
+);
+
+/* =====================================================================
+   完整 FCP 教學：照真正的剪輯流程，一課一課、一步一步
+   ===================================================================== */
+const COURSE = [
+  { n: '第 1 課', t: '建立資源庫、事件、專案', goal: '搞懂 FCP 的三層結構：資源庫（Library）裝事件（Event），事件裡放素材和專案（Project）。',
+    steps: [['File › New › Library…', '建一個新的資源庫，存在外接硬碟或空間大的地方'], ['⌥N', '新增事件，用拍攝日期或主題命名，例如「2026-11 公司活動」'], ['⌘N', '新增專案，點 Use Custom Settings'], ['', '影片格式選 1080p HD、解析度 1920×1080、影格速率跟拍攝的一樣（台灣手機多半 30p）'], ['', '按 OK，下方時間線就是空的專案']],
+    here: '練習室已經開好一個「我的專案」（1080p、30 fps），左上角資源庫裡有「練習素材」和「我匯入的」兩個事件。' },
+  { n: '第 2 課', t: '匯入素材', goal: '把手機或相機的影片放進事件。',
+    steps: [['⌘I', '打開 Media Import 視窗'], ['', '左邊選來源（相機、SD 卡或資料夾），右邊選要匯入的檔案（按住 ⌘ 多選）'], ['', '右側「Add to existing event」選事件，或「Create new event in」建新事件'], ['', 'Files 選 Copy to library（複製一份，最保險）或 Leave files in place（不複製，省空間）'], ['', '大檔案可以勾 Create proxy media（代理媒體），剪起來比較順'], ['Import All / Import Selected', '開始匯入']],
+    here: '按左上角的匯入箭頭（⌘I）跑完一樣的流程，可以選你自己的影片、照片、音樂。', mission: 'importWin' },
+  { n: '第 3 課', t: '整理素材：評分與關鍵字', goal: '素材多的時候先挑好壞，剪的時候才找得到。',
+    steps: [['F', '標成喜好（綠線）'], ['Delete', '標成拒絕（紅線）。不會刪檔，只是藏起來'], ['U', '取消評分'], ['⌘K', '打開關鍵字編輯器，幫素材加「開場」「訪談」等關鍵字'], ['', '瀏覽器上方的選單切到 Favorites 或 Hide Rejected，只看好的素材']],
+    here: '瀏覽器裡選素材照著按，上方的「Hide Rejected」可以切換篩選。', mission: 'rate' },
+  { n: '第 4 課', t: '粗剪：把素材排上時間線', goal: '先把故事順序排出來，不用管細節。',
+    steps: [['I / O', '在瀏覽器的素材上設定開頭和結尾，只取要用的那段'], ['E', 'Append：接到時間線最後面（最常用）'], ['W', 'Insert：插到播放頭的位置，後面的片段往後推'], ['D', 'Overwrite：從播放頭開始蓋掉原本的片段'], ['Q', 'Connect：放到主故事線上方當 B-roll，會跟著下面的片段一起移動'], ['空白鍵 / J K L', '播放檢查；J 倒退、K 停、L 快轉，連按 L 會加速']],
+    here: '用「海邊」「城市夜景」「森林」練 I、O、E，排出三段。', mission: 'three' },
+  { n: '第 5 課', t: '細剪：切、刪、修剪', goal: '把多餘的部分修掉，讓節奏變緊。',
+    steps: [['⌘B', '在播放頭的位置切一刀（或按 B 換成刀片工具直接點）'], ['Delete', '刪掉選取的片段，後面自動補上（Ripple Delete）'], ['⇧Delete', '刪掉但留下空白（Gap）'], ['', '拖片段的左右邊緣修剪長度，後面的片段會自動跟著動'], ['T', '修剪工具：拖兩段中間做 Roll（一邊變長、另一邊變短）；拖片段中間做 Slip（換用哪一段畫面，長度不變）'], ['⌃E', '雙擊剪接點打開 Precision Editor，一格一格精準調整']],
+    here: '照著做，左下的任務清單會自動打勾。', mission: 'blade' },
+  { n: '第 6 課', t: 'B-roll、多機位、J/L Cut', goal: '讓訪談不只是一張臉：上方疊畫面、在機位之間切換、聲音先進或晚出。',
+    steps: [['Q', '把「森林」連接到訪談上方，畫面換成森林、聲音還是訪談'], ['', '瀏覽器按住 ⌘ 選「訪談」和「訪談・側面機位」→ File › New › Multicam Clip'], ['⇧⌘7', '打開 Angle Viewer，播放時按 1、2 切換機位'], ['⌃S', '把片段的聲音展開，聲音邊緣往前拖就是 J-Cut、往後拖就是 L-Cut']],
+    here: '「訪談」和「訪談・側面機位」的嘴型是同步的，很適合練多機剪輯。', mission: 'mc' },
+  { n: '第 7 課', t: '轉場與特效', goal: '在需要的地方加轉場和效果，不要每個剪接點都加。',
+    steps: [['⌘T', '在選取的剪接點加預設的 Cross Dissolve'], ['⌃⌘5', '打開轉場瀏覽器，把轉場拖到兩段之間'], ['⌘5', '打開效果瀏覽器，把效果拖到片段上'], ['', '在檢查器調強度；雙擊轉場可以拖動長度'], ['', 'Keying › Keyer 可以去掉綠幕']],
+    here: '用「綠幕人物」連接到「城市夜景」上方，加 Keyer 去背。', mission: 'greenkey' },
+  { n: '第 8 課', t: '標題與字幕', goal: '加片名、人名條和字幕。',
+    steps: [['⌃T', '加基本標題（Basic Title）'], ['⇧⌃T', '加下方標題（Lower Third）放人名'], ['⌥⌘1', '打開標題與產生器側邊欄，挑樣式拖進時間線'], ['', '在檢查器的 Text 分頁改字型、大小、顏色'], ['Edit › Captions › Transcribe to Captions', 'FCP 會自動聽寫產生字幕']],
+    here: '標題按 ⌥Y（瀏覽器會攔 ⌃T）；自動字幕在 Edit › Captions。', mission: 'caption' },
+  { n: '第 9 課', t: '聲音', goal: '人聲清楚、音樂不要蓋過人聲、結尾不要突然斷掉。',
+    steps: [['⌃= / ⌃-', '音量加減 1 dB；也可以在片段上下拖那條音量線'], ['', '拖音訊片段兩端的小圓點做淡入淡出'], ['', '人聲大約在 -12 到 -6 dB，背景音樂比人聲低 10～15 dB'], ['⌘4 › Audio', '在檢查器用 Loudness、Noise Removal 改善音質'], ['', '用 Roles（角色）把對白、音樂、音效分開，在時間線索引一次開關']],
+    here: '加「抒情鋼琴」或「輕快節奏」當配樂，把音量調低並做淡出。', mission: 'fade' },
+  { n: '第 10 課', t: '速度：慢動作、快轉、定格', goal: '用速度改變節奏感。',
+    steps: [['⌘R', '打開 Retime 編輯器，片段上方出現速度條'], ['', 'Retime 選單選 Slow 50% / 25% 或 Fast 2x'], ['', 'Retime › Video Quality › Optical Flow：慢動作時補出中間的畫面，比較順'], ['⇧H', '在播放頭的位置定格 2 秒'], ['⇧B', 'Blade Speed：同一段片段的不同地方設不同速度'], ['', 'Retime › Reverse Clip 倒轉']],
+    here: '用「跑步（練慢動作）」練 Slow 25% 加 Optical Flow，最能看出差別。', mission: 'optflow' },
+  { n: '第 11 課', t: '調色', goal: '先把每段的亮度、顏色校正一致，再做風格。',
+    steps: [['⌥⌘B', 'Balance Color：自動校正'], ['⌘6', '打開 Color 檢查器，加 Color Board、Color Wheels 或 Curves'], ['', '先調 Exposure（亮度）再調 Color（顏色）和 Saturation（飽和度）'], ['⌘7', '打開 Video Scopes（示波器），看有沒有過曝'], ['', 'Match Color：讓這段的顏色跟另一段一樣']],
+    here: '用「夕陽山景」和「雪山」練：一段調暖、一段調冷。', mission: 'grade' },
+  { n: '第 12 課', t: '動畫：關鍵影格', goal: '讓畫面慢慢放大、移動，或讓文字飛進來。',
+    steps: [['', '播放頭移到開始的位置，在檢查器 Transform 的 Scale 旁邊按 ◆（或 ⌥K）'], ['', '播放頭往後移，把 Scale 改成 120%，FCP 會自動加第二個關鍵影格'], ['⌃V', '在時間線打開動畫編輯器，可以拖動關鍵影格'], ['⇧T', '檢視器顯示 Transform 控制框，直接拖拉']],
+    here: '用「產品特寫」做慢慢推進的效果。', mission: 'kf' },
+  { n: '第 13 課', t: '進階：複合片段、試演、標記', goal: '整理大型專案的工具。',
+    steps: [['⌥G', '把幾段片段包成一個複合片段，像資料夾一樣'], ['⇧Y / Y', '試演：同一個位置放好幾個候選，按 Y 打開比較'], ['M', '加標記，再按一次 M 改名字或改成待辦'], ['⌃\'', '跳到下一個標記']],
+    here: '照著練，任務清單會自動打勾。', mission: 'audition' },
+  { n: '第 14 課', t: '輸出', goal: '做出可以上傳的影片檔。',
+    steps: [['⌘E', 'File › Share › Master File'], ['', 'Settings 分頁：Format 選 Video and Audio，Video codec 選 H.264（檔案小、哪裡都能播）'], ['', 'Resolution 選 1920×1080，按 Next 選存檔位置'], ['⌘9', '背景工作視窗，看輸出進度'], ['', '要上傳 YouTube、IG 可以直接選 Share 裡的預設，或用 Compressor 精準控制大小']],
+    here: '這裡按 ⌘E 會真的輸出 1080p 的 MP4，可以直接上傳。', mission: 'export' },
+];
+function fullCourse() {
+  const kk = s => s ? (/[⌘⌥⌃⇧]/.test(s) || /^[A-Z]( \/ [A-Z])*$/.test(s) || s.length <= 7 ? kbd(s) : `<b>${esc(s)}</b>`) : '';
+  openModal(`<h3>FCP 完整教學（一步一步）</h3><p class="muted">照真正剪一支影片的順序排，每課的步驟是在公司 Mac 上的 Final Cut Pro 怎麼按；下面「在練習室」是這裡怎麼練。完成對應的任務會打勾。</p>`
+    + COURSE.map(L => `<div class="ep"><h4><span>${L.n}</span>${esc(L.t)}${L.mission && done.has(L.mission) ? '　<span class="tag">✓ 已練過</span>' : ''}</h4><p>${esc(L.goal)}</p><ol class="steps">${L.steps.map(([k, d]) => `<li>${k ? kk(k) + '　' : ''}${esc(d)}</li>`).join('')}</ol><div class="tag">在練習室</div><ul><li>${esc(L.here)}</li></ul></div>`).join('')
+    + `<div class="dlg-act"><button class="btn primary" data-close type="button">開始練習</button></div>`);
+}
+MENUS.Help.splice(0, 0, ['FCP 完整教學（一步一步）', '14 課，從開專案到輸出', '', fullCourse]);
+MISSIONS.push(
+  { id: 'greenkey', adv: 1, t: () => `<b>第 7 課 綠幕去背</b>　主要故事線放「城市夜景」，用 ${kbd('Q')} 把「綠幕人物」連接在上方，打開「效果」把 Keyer 拖到綠幕人物上` },
+  { id: 'audition', adv: 1, t: () => `<b>第 13 課 試演</b>　選時間線上的片段，在瀏覽器選另一段素材按 ${kbd('⇧Y')} 加成候選，再按 ${kbd('Y')} 打開比較` },
+  { id: 'kw', adv: 1, t: () => `<b>第 3 課 關鍵字</b>　在瀏覽器選素材，按 ${kbd('⌘K')} 加一個關鍵字` },
+  { id: 'precision', adv: 1, t: () => `<b>第 5 課 精確編輯器</b>　雙擊兩段片段之間的剪接點，打開 Precision Editor 調整` },
+  { id: 'caption', adv: 1, t: () => `<b>第 8 課 字幕</b>　Edit › Captions › Transcribe to Captions，幫訪談自動產生字幕` },
+  { id: 'roles', adv: 1, t: () => `<b>第 9 課 Roles</b>　打開時間線索引（左上角 Index）的 Roles，關掉 Music 聽聽看` },
 );
 renderMissions();
 applyPlugins(); makeFxThumbs(); makeTitleThumbs(); buildFxLists(); buildCards(); renderMissions(); focusPanel('browser'); fullRender(); updatePlayBtn();

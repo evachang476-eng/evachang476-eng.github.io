@@ -2087,8 +2087,16 @@ function recordTimelineWC(mbps, onProgress) {
     exAbort = () => { cleanup(); try { venc.close(); } catch (e) { } try { aenc && aenc.close(); } catch (e) { } resolve(null); };
     exportFrameHook = () => {
       if (!recording || failed) return;
-      const ts = Math.round(playhead * 1e6); if (ts <= lastTs) return; lastTs = ts;
-      try { const f = new VideoFrame(cv, { timestamp: ts, duration: Math.round(1e6 / FPS) }); venc.encode(f, { keyFrame: frameN % (FPS * 2) === 0 }); f.close(); frameN++; } catch (e) { fail(e); }
+      // exact 30 fps: one frame per 1/30 s slot of the timeline (skip doubles, repeat to fill gaps),
+      // so every frame has the same length; Windows players reject a video track with uneven / zero-length frames
+      const idx = Math.round(playhead * FPS); if (idx <= lastTs) return;
+      const from = lastTs < 0 ? 0 : lastTs + 1; lastTs = idx;
+      try {
+        for (let i = from; i <= idx; i++) {
+          const f = new VideoFrame(cv, { timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
+          venc.encode(f, { keyFrame: frameN % (FPS * 2) === 0 }); f.close(); frameN++;
+        }
+      } catch (e) { fail(e); }
     };
     const finish = async () => {
       recording = false;

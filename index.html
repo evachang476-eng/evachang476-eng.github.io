@@ -2010,7 +2010,7 @@ function learn() {
   + EPS.map(([n, t, topics, prac, ok]) => `<div class="ep"><h4><span>${n}</span>${t}</h4><p>${topics}</p><div class="tag ${ok ? '' : 'no'}">${ok ? '可以在練習室練' : '只能看影片'}</div><ul><li>${kk(prac)}</li></ul></div>`).join('')
   + `<p class="muted">原文章的目錄沒有第十二集。</p><div class="dlg-act"><button class="btn primary" data-close type="button">開始練習</button></div>`);
 }
-function closeModal() { $('#modal').hidden = true; clearInterval(exTimer); }
+function closeModal() { $('#modal').hidden = true; clearInterval(exTimer); if (exAbort) exAbort(); }
 $('#modal').addEventListener('click', e => { if (e.target.id === 'modal' || e.target.closest('[data-close]')) closeModal(); });
 function help() {
   const rows = (title, list) => `<tr><th colspan="2">${title}</th></tr>` + list.map(([k, d]) => `<tr><td>${k.split(' ').map(kbd).join(' ')}</td><td>${d}</td></tr>`).join('');
@@ -2022,31 +2022,93 @@ function help() {
   ${rows('其他', [['⌥T', '加轉場（FCP：⌘T）'], ['⌥Y', '加標題（FCP：⌃T）'], ['⌘+ ⌘−', '放大 / 縮小時間線'], ['⇧Z', '時間線顯示全部'], ['⌘E', '輸出']])}</table>
   <div class="dlg-act"><button class="btn primary" data-close type="button">知道了</button></div>`);
 }
-let exTimer;
+let exTimer, exAbort = null;
+/* ---------- real export: play the timeline once and record the viewer + sound into a video file ---------- */
+function exFormats() {
+  const list = [['mp4', 'video/mp4;codecs=avc1.42E01F,mp4a.40.2', 'MP4（H.264，手機電腦都能播，建議）'], ['mp4', 'video/mp4;codecs=avc1.42E01F,opus', 'MP4（H.264）'], ['mp4', 'video/mp4', 'MP4'],
+    ['webm', 'video/webm;codecs=vp9,opus', 'WebM（VP9）'], ['webm', 'video/webm;codecs=vp8,opus', 'WebM（VP8）'], ['webm', 'video/webm', 'WebM']];
+  const out = [], seen = new Set();
+  if (!window.MediaRecorder || !cv.captureStream) return out;
+  for (const f of list) { try { if (!seen.has(f[0]) && MediaRecorder.isTypeSupported(f[1])) { seen.add(f[0]); out.push(f); } } catch (e) { } }
+  return out;
+}
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  return url;
+}
+function recordTimeline(fmt, mbps, onProgress) {
+  return new Promise(async (resolve, reject) => {
+    const dur = projEnd();
+    initAudio(); try { if (actx && actx.state === 'suspended') await actx.resume(); } catch (e) { }
+    const saved = { sel, safeOn, soundOn, focus, proxyView, scopeOn };
+    sel = null; selSet.clear(); safeOn = false; soundOn = true; proxyView = false; hover = null; skimT = null; focus = 'timeline';
+    stop(); playhead = 0; fullRender();
+    let dest = null; const users = ORDER.map(id => MEDIA[id]).filter(m => m && m.user && m.el && !m.img);
+    if (actx) {
+      dest = actx.createMediaStreamDestination(); try { gn.connect(dest); } catch (e) { }
+      for (const m of users) {
+        if (!m.asrc) { try { m.asrc = actx.createMediaElementSource(m.el); m.asrc.connect(actx.destination); } catch (e) { } }
+        if (m.asrc) try { m.asrc.connect(dest); } catch (e) { }
+      }
+    }
+    const vstream = cv.captureStream(FPS);
+    const stream = new MediaStream([...vstream.getVideoTracks(), ...(dest ? dest.stream.getAudioTracks() : [])]);
+    let rec; try { rec = new MediaRecorder(stream, { mimeType: fmt[1], videoBitsPerSecond: mbps * 1e6, audioBitsPerSecond: 160000 }); } catch (e) { vstream.getTracks().forEach(t => t.stop()); return reject(e); }
+    const chunks = []; let cancelled = false, watch = null, started = false;
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    const cleanup = () => {
+      clearInterval(watch); stop(); exAbort = null;
+      if (dest) { try { gn.disconnect(dest); } catch (e) { } for (const m of users) if (m.asrc) try { m.asrc.disconnect(dest); } catch (e) { } }
+      vstream.getTracks().forEach(t => t.stop());
+      sel = saved.sel; safeOn = saved.safeOn; soundOn = saved.soundOn; proxyView = saved.proxyView; focus = saved.focus; fullRender();
+    };
+    rec.onstop = () => { cleanup(); resolve(cancelled ? null : new Blob(chunks, { type: fmt[1].split(';')[0] })); };
+    rec.onerror = e => { cancelled = true; cleanup(); reject(e.error || e); };
+    exAbort = () => { cancelled = true; if (rec.state !== 'inactive') rec.stop(); else cleanup(); };
+    // give your own videos a moment to load the first frame before recording starts
+    setTimeout(() => {
+      if (cancelled) return;
+      rec.start(1000); started = true; playhead = 0; togglePlay();
+      watch = setInterval(() => {
+        onProgress(clamp(playhead / Math.max(dur, .001), 0, 1), document.hidden);
+        if (!rate || playhead >= dur - .001) { clearInterval(watch); setTimeout(() => { if (rec.state !== 'inactive') rec.stop(); }, 250); }
+      }, 100);
+    }, 700);
+  });
+}
 function opExport() {
   layout(); if (!S.primary.length && !S.connected.length) return toast('⌘E', '時間線是空的，先放幾段素材再輸出');
-  const n = S.primary.filter(k => kind(k) !== 'gap').length;
-  openModal(`<h3>輸出檔案</h3><p class="muted">在 Final Cut Pro 按 ⌘E 會出現類似的視窗。這裡是練習用的模擬，不會真的產生檔案。</p>
+  const n = S.primary.filter(k => kind(k) !== 'gap').length, fmts = exFormats(), dur = projEnd();
+  openModal(`<h3>輸出檔案</h3><p class="muted">會從頭到尾播放一次時間線，邊播邊錄成真正的影片檔，所以要等跟影片一樣長的時間。輸出時不要切到別的分頁或把視窗縮小，不然畫面會停住。</p>
   <label for="ex-name">檔名<input id="ex-name" value="我的第一支影片"></label>
-  <label for="ex-codec">影片編碼<select id="ex-codec"><option value="10">H.264（檔案小，最常用）</option><option value="6">HEVC H.265（更小，舊電腦較難播）</option><option value="147">Apple ProRes 422（畫質好，檔案大）</option></select></label>
-  <label for="ex-res">解析度<select id="ex-res"><option value="1">1920 × 1080</option><option value="4">3840 × 2160（4K）</option></select></label>
+  ${fmts.length ? `<label for="ex-fmt">格式<select id="ex-fmt">${fmts.map((f, i) => `<option value="${i}">${f[2]}</option>`).join('')}</select></label>
+  <label for="ex-q">畫質<select id="ex-q"><option value="8">高（約 8 Mbps）</option><option value="4" selected>標準（約 4 Mbps）</option><option value="2">小檔案（約 2 Mbps）</option></select></label>` : '<p><b>這個瀏覽器不能錄影片。</b>請改用電腦版最新的 Chrome 或 Edge。</p>'}
   <p class="ex-sum" id="ex-sum"></p>
   <div class="prog" id="ex-prog" hidden><i></i></div><p id="ex-msg"></p>
-  <div class="dlg-act"><button class="btn" data-close type="button">取消</button><button class="btn primary" id="ex-go" type="button">輸出</button><button class="btn" id="ex-comp" type="button">Send to Compressor…</button></div>`);
-  const sum = () => { const mbps = +$('#ex-codec').value * +$('#ex-res').value; const mb = projEnd() * mbps / 8; $('#ex-sum').textContent = `長度 ${fmtTC(projEnd())} · 主故事線 ${n} 段 · 預估大小約 ${mb < 1000 ? Math.max(1, Math.round(mb)) + ' MB' : (mb / 1000).toFixed(1) + ' GB'}`; };
-  $('#ex-codec').onchange = sum; $('#ex-res').onchange = sum; sum();
+  <div class="dlg-act"><button class="btn" data-close type="button" id="ex-cancel">取消</button><button class="btn primary" id="ex-go" type="button"${fmts.length ? '' : ' disabled'}>輸出</button><button class="btn" id="ex-comp" type="button">Send to Compressor…</button></div>`);
+  const sum = () => { const mb = fmts.length ? dur * +$('#ex-q').value / 8 : 0; $('#ex-sum').textContent = `長度 ${fmtTC(dur)} · 主故事線 ${n} 段 · 畫面 ${cv.width} × ${cv.height} · ${FPS} fps` + (fmts.length ? ` · 預估約 ${Math.max(1, Math.round(mb))} MB · 需要約 ${Math.ceil(dur) + 1} 秒` : ''); };
+  if (fmts.length) $('#ex-q').onchange = sum; sum();
   $('#ex-comp').onclick = () => { closeModal(); sendToCompressor(); };
-  $('#ex-go').onclick = () => {
+  $('#ex-go').onclick = async () => {
     const go = $('#ex-go'); if (go.dataset.done) return closeModal();
-    go.disabled = true; $('#ex-prog').hidden = false; let p = 0;
-    exTimer = setInterval(() => {
-      p += 4; $('#ex-prog i').style.width = p + '%';
-      if (p >= 100) {
-        clearInterval(exTimer); const ext = $('#ex-codec').value === '147' ? 'mov' : 'mp4';
-        $('#ex-msg').textContent = `輸出完成（模擬）：${$('#ex-name').value || '未命名'}.${ext}`;
-        go.disabled = false; go.textContent = '完成'; go.dataset.done = '1'; mark('export');
-      }
-    }, 70);
+    const fmt = fmts[+$('#ex-fmt').value], mbps = +$('#ex-q').value, name = ($('#ex-name').value || '未命名').replace(/[\\/:*?"<>|]/g, '_').trim() || '未命名';
+    go.disabled = true; $('#ex-fmt').disabled = $('#ex-q').disabled = $('#ex-name').disabled = true; $('#ex-comp').hidden = true;
+    $('#ex-prog').hidden = false; const msg = $('#ex-msg'); msg.textContent = '準備中…';
+    try {
+      const blob = await recordTimeline(fmt, mbps, (p, hidden) => {
+        $('#ex-prog i').style.width = (p * 100).toFixed(1) + '%';
+        msg.textContent = hidden ? '⚠ 視窗被切走了，畫面會停住。請切回這個分頁。' : `輸出中… ${Math.round(p * 100)}%（${fmtTC(p * dur)} / ${fmtTC(dur)}）`;
+      });
+      if (!blob) return; // cancelled
+      const file = `${name}.${fmt[0]}`, url = downloadBlob(blob, file);
+      $('#ex-prog i').style.width = '100%';
+      msg.innerHTML = `輸出完成：<b>${esc(file)}</b>（${(blob.size / 1048576).toFixed(1)} MB），已開始下載。沒看到檔案的話 <a href="${url}" download="${esc(file)}">按這裡再下載一次</a>。`;
+      go.disabled = false; go.textContent = '完成'; go.dataset.done = '1'; mark('export');
+    } catch (e) {
+      msg.textContent = '輸出失敗：' + (e && e.message ? e.message : e) + '。可以換一個格式再試一次。';
+      go.disabled = false; $('#ex-fmt').disabled = $('#ex-q').disabled = $('#ex-name').disabled = false;
+    }
   };
 }
 

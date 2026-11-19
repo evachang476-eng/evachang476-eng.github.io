@@ -2043,75 +2043,111 @@ async function pickAudioCodec(sr, ch) {
   for (const [codec, mux] of [['mp4a.40.2', 'aac'], ['opus', 'opus']]) { try { const s = await AudioEncoder.isConfigSupported({ codec, sampleRate: sr, numberOfChannels: ch, bitrate: 160000 }); if (s.supported) return { codec, mux }; } catch (e) { } }
   return null;
 }
-/* MP4 built frame by frame (WebCodecs + mp4-muxer): has a proper index, so players can drag the time bar */
+/* MP4 export that does not depend on real-time playback: every frame is drawn at its exact timeline time
+   (seeking your videos frame by frame) and the sound is mixed offline, so the file is always exactly as
+   long as the timeline, however slow the computer is. WebCodecs + mp4-muxer write a proper index (seekable). */
+let exportBusy = false;
+async function renderTimelineAudio(dur) {
+  const SR = 48000, oc = new OfflineAudioContext(2, Math.max(1, Math.ceil(dur * SR)), SR), bufs = {};
+  const getBuf = async id => {
+    if (id in bufs) return bufs[id];
+    let b = null; try { const m = MEDIA[id]; b = await oc.decodeAudioData(await (await fetch(m.el.src)).arrayBuffer()); } catch (e) { }
+    return (bufs[id] = b);
+  };
+  const curve = (n, f) => { const a = new Float32Array(n); for (let i = 0; i < n; i++) a[i] = f(i / (n - 1)); return a; };
+  // k plays at timeline time absStart; only the part inside [w0, w1] is heard
+  const sched = async (k, absStart, w0, w1, db) => {
+    if (k.enabled === false) return;
+    if (k.media === 'gap' || k.media === 'title') return;
+    const m = MEDIA[k.media]; if (!m) return;
+    if (roleOff.has(audioRole(k))) return;
+    const L = len(k), p0 = Math.max(absStart, w0), p1 = Math.min(absStart + L, w1); if (p1 - p0 < .005) return;
+    const vol = db + (k.vol || 0), g = t => Math.pow(10, vol / 20) * fadeGain(k, t - absStart);
+    if (m.compound) {
+      if (k.hold || k.rev || k.speed !== 1) return; // only plain compound clips carry sound in the export
+      let acc = 0; for (const q of m.clips) { await sched(q, absStart + acc - k.in, p0, p1, vol); acc += len(q); }
+      return;
+    }
+    const id = mediaOf(k), mm = MEDIA[id]; if (!mm || mm.img) return;
+    const n = Math.max(2, Math.ceil((p1 - p0) * 200)), gain = oc.createGain();
+    gain.gain.setValueCurveAtTime(curve(n, u => g(p0 + u * (p1 - p0))), p0, p1 - p0); gain.connect(oc.destination);
+    if (mm.user) {
+      if (k.hold || k.rev) return;
+      const buf = await getBuf(id); if (!buf) return;
+      const s = oc.createBufferSource(); s.buffer = buf; s.playbackRate.value = k.speed; s.connect(gain);
+      s.start(p0, Math.max(0, srcAt(k, p0 - absStart))); s.stop(p1);
+    } else if (mm.type === 'audio') {
+      // the built-in music: same notes as the live preview
+      const o = oc.createOscillator(); o.type = 'triangle'; const f = oc.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 1800;
+      const env = oc.createGain();
+      o.frequency.setValueCurveAtTime(curve(n, u => NOTES[Math.floor(srcAt(k, p0 + u * (p1 - p0) - absStart) * 4) % 8]), p0, p1 - p0);
+      env.gain.setValueCurveAtTime(curve(n, u => { const b = srcAt(k, p0 + u * (p1 - p0) - absStart) * 4; return .14 * Math.exp(-(b % 1) * 2.5); }), p0, p1 - p0);
+      o.connect(f).connect(env).connect(gain); o.start(p0); o.stop(p1);
+    }
+  };
+  for (const k of [...S.primary, ...S.connected]) await sched(k, k._start, 0, dur, 0);
+  return oc.startRendering();
+}
 function recordTimelineWC(mbps, onProgress) {
   return new Promise(async (resolve, reject) => {
-    const dur = projEnd(), OW = W * HIRES, OH = H * HIRES, bps = mbps * 1e6;
-    let mod, vcodec;
-    try { mod = await loadMuxer(); } catch (e) { return reject(new Error('載入輸出元件失敗，請確認有連上網路')); }
-    vcodec = await pickVideoCodec(OW, OH, bps); if (!vcodec) return reject(new Error('這台電腦的瀏覽器不支援 H.264 編碼'));
-    initAudio(); try { if (actx && actx.state === 'suspended') await actx.resume(); } catch (e) { }
+    layout();
+    const dur = projEnd(), OW = W * HIRES, OH = H * HIRES, bps = mbps * 1e6, N = Math.max(1, Math.round(dur * FPS));
+    let mod; try { mod = await loadMuxer(); } catch (e) { return reject(new Error('載入輸出元件失敗，請確認有連上網路')); }
+    const vcodec = await pickVideoCodec(OW, OH, bps); if (!vcodec) return reject(new Error('這台電腦的瀏覽器不支援 H.264 編碼'));
+    const acfg = window.AudioEncoder ? await pickAudioCodec(48000, 2) : null;
     const saved = { sel, safeOn, soundOn, focus, proxyView, scopeOn };
-    sel = null; selSet.clear(); safeOn = false; scopeOn = false; soundOn = true; proxyView = false; hover = null; skimT = null; focus = 'timeline';
-    stop(); playhead = 0; hiresOn(); fullRender();
-    // sound: everything the speakers play also goes into the file
-    let dest = null, reader = null, atrack = null, acfg = null, first = null;
-    const users = ORDER.map(id => MEDIA[id]).filter(m => m && m.user && m.el && !m.img);
-    if (actx && window.MediaStreamTrackProcessor && window.AudioEncoder) {
-      dest = actx.createMediaStreamDestination(); try { gn.connect(dest); } catch (e) { }
-      for (const m of users) {
-        if (!m.asrc) { try { m.asrc = actx.createMediaElementSource(m.el); m.asrc.connect(actx.destination); } catch (e) { } }
-        if (m.asrc) try { m.asrc.connect(dest); } catch (e) { }
-      }
-      atrack = dest.stream.getAudioTracks()[0];
-      try { reader = new MediaStreamTrackProcessor({ track: atrack }).readable.getReader(); const r = await reader.read(); first = r.value; } catch (e) { reader = null; }
-      if (first) { acfg = await pickAudioCodec(first.sampleRate, first.numberOfChannels); acfg = acfg && { ...acfg, sampleRate: first.sampleRate, ch: first.numberOfChannels }; first.close(); }
-    }
-    let recording = false, done = false, failed = null, frameN = 0, lastTs = -1, watch = null;
-    const muxer = new mod.Muxer({ target: new mod.ArrayBufferTarget(), fastStart: 'in-memory', firstTimestampBehavior: 'offset',
-      video: { codec: 'avc', width: OW, height: OH, frameRate: FPS }, audio: acfg ? { codec: acfg.mux, numberOfChannels: acfg.ch, sampleRate: acfg.sampleRate } : undefined });
-    const fail = e => { if (!failed) failed = e; };
-    const venc = new VideoEncoder({ output: (c, m) => muxer.addVideoChunk(c, m), error: fail });
-    venc.configure({ codec: vcodec, width: OW, height: OH, bitrate: bps, framerate: FPS });
-    let aenc = null;
-    if (acfg) { aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: fail }); aenc.configure({ codec: acfg.codec, sampleRate: acfg.sampleRate, numberOfChannels: acfg.ch, bitrate: 160000 }); }
-    const pump = async () => { while (reader && !done) { let r; try { r = await reader.read(); } catch (e) { break; } if (r.done) break; const d = r.value; if (recording && aenc && aenc.state === 'configured') { try { aenc.encode(d); } catch (e) { fail(e); } } d.close(); } };
-    if (reader) pump();
+    let cancelled = false, failed = null;
+    const users = ORDER.map(id => MEDIA[id]).filter(m => m && m.user && m.el && !m.img && m.type === 'video');
     const cleanup = () => {
-      done = true; recording = false; exportFrameHook = null; clearInterval(watch); stop(); exAbort = null;
-      if (reader) reader.cancel().catch(() => { }); if (atrack) atrack.stop();
-      if (dest) { try { gn.disconnect(dest); } catch (e) { } for (const m of users) if (m.asrc) try { m.asrc.disconnect(dest); } catch (e) { } }
-      hiresOff();
+      exportBusy = false; exAbort = null; hiresOff();
       sel = saved.sel; safeOn = saved.safeOn; scopeOn = saved.scopeOn; soundOn = saved.soundOn; proxyView = saved.proxyView; focus = saved.focus; fullRender();
     };
-    exAbort = () => { cleanup(); try { venc.close(); } catch (e) { } try { aenc && aenc.close(); } catch (e) { } resolve(null); };
-    exportFrameHook = () => {
-      if (!recording || failed) return;
-      // exact 30 fps: one frame per 1/30 s slot of the timeline (skip doubles, repeat to fill gaps),
-      // so every frame has the same length; Windows players reject a video track with uneven / zero-length frames
-      const idx = Math.round(playhead * FPS); if (idx <= lastTs) return;
-      const from = lastTs < 0 ? 0 : lastTs + 1; lastTs = idx;
-      try {
-        for (let i = from; i <= idx; i++) {
-          const f = new VideoFrame(cv, { timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
-          venc.encode(f, { keyFrame: frameN % (FPS * 2) === 0 }); f.close(); frameN++;
+    exAbort = () => { cancelled = true; };
+    stop(); exportBusy = true;
+    sel = null; selSet.clear(); safeOn = false; scopeOn = false; proxyView = false; hover = null; skimT = null; focus = 'timeline';
+    for (const m of users) m.el.pause();
+    hiresOn(); fullRender();
+    try {
+      const muxer = new mod.Muxer({ target: new mod.ArrayBufferTarget(), fastStart: 'in-memory', firstTimestampBehavior: 'offset',
+        video: { codec: 'avc', width: OW, height: OH, frameRate: FPS }, audio: acfg ? { codec: acfg.mux, numberOfChannels: 2, sampleRate: 48000 } : undefined });
+      const fail = e => { if (!failed) failed = e; };
+      // 1) sound
+      if (acfg) {
+        onProgress(0, false, '處理聲音中…');
+        const ab = await renderTimelineAudio(dur); if (cancelled) throw 0;
+        const aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: fail });
+        aenc.configure({ codec: acfg.codec, sampleRate: 48000, numberOfChannels: 2, bitrate: 160000 });
+        const L = ab.getChannelData(0), R = ab.numberOfChannels > 1 ? ab.getChannelData(1) : L;
+        for (let off = 0; off < ab.length; off += 1024) {
+          const n = Math.min(1024, ab.length - off), d = new Float32Array(n * 2); d.set(L.subarray(off, off + n), 0); d.set(R.subarray(off, off + n), n);
+          const a = new AudioData({ format: 'f32-planar', sampleRate: 48000, numberOfFrames: n, numberOfChannels: 2, timestamp: Math.round(off / 48000 * 1e6), data: d });
+          aenc.encode(a); a.close();
         }
-      } catch (e) { fail(e); }
-    };
-    const finish = async () => {
-      recording = false;
-      try { await venc.flush(); if (aenc) await aenc.flush(); if (failed) throw failed; muxer.finalize(); const buf = muxer.target.buffer; cleanup(); try { venc.close(); aenc && aenc.close(); } catch (e) { } resolve(new Blob([buf], { type: 'video/mp4' })); }
-      catch (e) { cleanup(); reject(e); }
-    };
-    setTimeout(() => {
-      if (done) return;
-      recording = true; playhead = 0; togglePlay();
-      watch = setInterval(() => {
-        onProgress(clamp(playhead / Math.max(dur, .001), 0, 1), document.hidden);
-        if (failed) { clearInterval(watch); cleanup(); reject(failed); return; }
-        if (!rate || playhead >= dur - .001) { clearInterval(watch); exportFrameHook && exportFrameHook(); setTimeout(finish, 200); }
-      }, 100);
-    }, 700);
+        await aenc.flush(); aenc.close(); if (failed) throw failed;
+      }
+      // 2) picture, one frame at a time
+      const venc = new VideoEncoder({ output: (c, m) => muxer.addVideoChunk(c, m), error: fail });
+      venc.configure({ codec: vcodec, width: OW, height: OH, bitrate: bps, framerate: FPS });
+      const waitVideos = async () => {
+        for (let tries = 0; tries < 40; tries++) {
+          const busy = users.filter(m => m.el.seeking || m.pend != null || m.el.readyState < 2);
+          if (!busy.length) return;
+          await Promise.race([...busy.map(m => new Promise(r => m.el.addEventListener('seeked', r, { once: true }))), new Promise(r => setTimeout(r, 250))]);
+        }
+      };
+      for (let i = 0; i < N; i++) {
+        if (cancelled) throw 0; if (failed) throw failed;
+        playhead = i / FPS; rate = 0; syncUserMedia(); await waitVideos();
+        drawFrame(); drawOverlays();
+        const f = new VideoFrame(cv, { timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
+        venc.encode(f, { keyFrame: i % (FPS * 2) === 0 }); f.close();
+        if (venc.encodeQueueSize > 4) await new Promise(r => venc.addEventListener('dequeue', r, { once: true }));
+        if (i % 3 === 0) onProgress(i / N, false);
+      }
+      await venc.flush(); venc.close(); if (failed) throw failed;
+      muxer.finalize(); const buf = muxer.target.buffer;
+      playhead = 0; cleanup(); resolve(new Blob([buf], { type: 'video/mp4' }));
+    } catch (e) { cleanup(); if (e === 0 || cancelled) resolve(null); else reject(e); }
   });
 }
 function exFormats() {
@@ -2172,14 +2208,14 @@ function recordTimeline(fmt, mbps, onProgress) {
 function opExport() {
   layout(); if (!S.primary.length && !S.connected.length) return toast('⌘E', '時間線是空的，先放幾段素材再輸出');
   const n = S.primary.filter(k => kind(k) !== 'gap').length, fmts = exFormats(), dur = projEnd();
-  openModal(`<h3>輸出檔案</h3><p class="muted">會從頭到尾播放一次時間線，邊播邊錄成真正的影片檔，所以要等跟影片一樣長的時間。輸出時不要切到別的分頁或把視窗縮小，不然畫面會停住。</p>
+  openModal(`<h3>輸出檔案</h3><p class="muted">MP4 會一格一格算出每個畫面、另外混好聲音，所以輸出的長度一定跟時間線一樣，電腦慢只是等比較久（大約是影片長度的 1～3 倍）。輸出時最好停在這個分頁。</p>
   <label for="ex-name">檔名<input id="ex-name" value="我的第一支影片"></label>
   ${fmts.length ? `<label for="ex-fmt">格式<select id="ex-fmt">${fmts.map((f, i) => `<option value="${i}">${f[2]}</option>`).join('')}</select></label>
   <label for="ex-q">畫質<select id="ex-q"><option value="20">高（約 20 Mbps）</option><option value="10" selected>標準（約 10 Mbps）</option><option value="5">小檔案（約 5 Mbps）</option></select></label>` : '<p><b>這個瀏覽器不能錄影片。</b>請改用電腦版最新的 Chrome 或 Edge。</p>'}
   <p class="ex-sum" id="ex-sum"></p>
   <div class="prog" id="ex-prog" hidden><i></i></div><p id="ex-msg"></p>
   <div class="dlg-act"><button class="btn" data-close type="button" id="ex-cancel">取消</button><button class="btn primary" id="ex-go" type="button"${fmts.length ? '' : ' disabled'}>輸出</button><button class="btn" id="ex-comp" type="button">Send to Compressor…</button></div>`);
-  const sum = () => { const mb = fmts.length ? dur * +$('#ex-q').value / 8 : 0; $('#ex-sum').textContent = `長度 ${fmtTC(dur)} · 主故事線 ${n} 段 · 畫面 ${W * HIRES} × ${H * HIRES} · ${FPS} fps` + (fmts.length ? ` · 預估約 ${Math.max(1, Math.round(mb))} MB · 需要約 ${Math.ceil(dur) + 1} 秒` : ''); };
+  const sum = () => { const mb = fmts.length ? dur * +$('#ex-q').value / 8 : 0; $('#ex-sum').textContent = `長度 ${fmtTC(dur)} · 主故事線 ${n} 段 · 畫面 ${W * HIRES} × ${H * HIRES} · ${FPS} fps` + (fmts.length ? ` · 預估約 ${Math.max(1, Math.round(mb))} MB` : ''); };
   if (fmts.length) $('#ex-q').onchange = sum; sum();
   $('#ex-comp').onclick = () => { closeModal(); sendToCompressor(); };
   $('#ex-go').onclick = async () => {
@@ -2188,9 +2224,9 @@ function opExport() {
     go.disabled = true; $('#ex-fmt').disabled = $('#ex-q').disabled = $('#ex-name').disabled = true; $('#ex-comp').hidden = true;
     $('#ex-prog').hidden = false; const msg = $('#ex-msg'); msg.textContent = '準備中…';
     try {
-      const prog = (p, hidden) => {
+      const prog = (p, hidden, note) => {
         $('#ex-prog i').style.width = (p * 100).toFixed(1) + '%';
-        msg.textContent = hidden ? '⚠ 視窗被切走了，畫面會停住。請切回這個分頁。' : `輸出中… ${Math.round(p * 100)}%（${fmtTC(p * dur)} / ${fmtTC(dur)}）`;
+        msg.textContent = note || (hidden ? '⚠ 視窗被切走了，畫面會停住。請切回這個分頁。' : `輸出中… ${Math.round(p * 100)}%（${fmtTC(p * dur)} / ${fmtTC(dur)}）`);
       };
       const blob = fmt[1] === 'wc' ? await recordTimelineWC(mbps, prog) : await recordTimeline(fmt, mbps, prog);
       if (!blob) return; // cancelled
@@ -2746,6 +2782,7 @@ function tick(now) {
     if (focus === 'browser') { const d = MEDIA[src.media].dur; src.t += dt * rate; if (src.t >= d) { src.t = d; stop(); } if (src.t <= 0) { src.t = 0; stop(); } }
     else { const e = projEnd(); playhead += dt * rate; if (playhead >= e) { playhead = e; stop(); } if (playhead <= 0) { playhead = 0; stop(); } scrollToPH(); }
   }
+  if (exportBusy) { last = now; requestAnimationFrame(tick); return; } // the exporter draws frames itself
   if (typeof followVideoClock === 'function') followVideoClock();
   updatePH(); syncUserMedia();
   // the project is 30 fps: redraw the viewer at most 30 times a second instead of 60

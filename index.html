@@ -2404,9 +2404,21 @@ function hookVideo(m) {
   m.grab = grab;
   el.addEventListener('seeked', () => { grab(); if (m.pend != null) { const p = m.pend; m.pend = null; if (Math.abs(el.currentTime - p) > .02) el.currentTime = p; } });
   el.addEventListener('loadeddata', grab);
-  if (el.requestVideoFrameCallback) { const cb = () => { grab(); el.requestVideoFrameCallback(cb); }; el.requestVideoFrameCallback(cb); }
+  el.addEventListener('pause', grab);
 }
-function seekTo(m, t) { const el = m.el; if (el.seeking) { m.pend = t; return; } if (Math.abs(el.currentTime - t) > .5 / FPS) el.currentTime = t; }
+// copy the current frame only right before a seek (copying every frame made big videos stutter)
+function seekTo(m, t) { const el = m.el; if (el.seeking) { m.pend = t; return; } if (Math.abs(el.currentTime - t) > .5 / FPS) { if (m.grab) m.grab(); el.currentTime = t; } }
+// while a single-speed clip of your own video plays, follow the video's own clock instead of
+// nudging its playback speed every frame (speed changes make the browser re-sync and stutter)
+function followVideoClock() {
+  if (!(rate > 0) || focus === 'browser' || skimT != null) return;
+  const k = primaryAt(playhead); if (!k || !k.enabled || kind(k) !== 'video' || k.hold || k.rev) return;
+  const m = MEDIA[mediaOf(k)]; if (!m || !m.user || m.img || !m.el || m.el.paused || m.el.seeking || m.el.readyState < 3) return;
+  const a = srcAt(k, 0), b = srcAt(k, 1), mid = srcAt(k, .5), sp = b - a;
+  if (!(sp > 0) || Math.abs(mid - (a + sp / 2)) > .002) return; // speed ramps: leave to the normal sync
+  const T = k._start + (m.el.currentTime - a) / sp;
+  if (Math.abs(T - playhead) < .25 && T >= k._start && T < k._start + len(k)) playhead = T;
+}
 function syncUserMedia() {
   const want = new Map(); meterUser = 0;
   const add = (id, t, playing, pr, vol) => { const m = MEDIA[id]; if (!m || !m.user || !m.ready || m.img || want.has(id)) return; want.set(id, { t, playing, pr, vol }); };
@@ -2441,9 +2453,13 @@ function syncUserMedia() {
     if (w.playing) {
       meterUser = Math.max(meterUser, el.muted ? 0 : el.volume * .8);
       const base = clamp(w.pr, .0625, 16), diff = t - el.currentTime;
-      if (el.paused) { if (Math.abs(diff) > .15) seekTo(m, t); el.playbackRate = base; el.play().catch(() => { }); }
-      else if (Math.abs(diff) > .8) { seekTo(m, t); el.playbackRate = base; }
-      else el.playbackRate = clamp(base * (1 + clamp(diff * .8, -.2, .2)), .0625, 16);
+      if (el.paused) { if (Math.abs(diff) > .15) seekTo(m, t); if (el.playbackRate !== base) el.playbackRate = base; el.play().catch(() => { }); }
+      else if (Math.abs(diff) > .8) { seekTo(m, t); if (el.playbackRate !== base) el.playbackRate = base; }
+      else {
+        // only three speeds (normal, a bit faster, a bit slower), switched with a dead zone, so the rate rarely changes
+        const want = Math.abs(diff) < .04 ? base : Math.abs(diff) > .12 ? clamp(base * (diff > 0 ? 1.08 : .92), .0625, 16) : null;
+        if (want != null && Math.abs(el.playbackRate - want) > 1e-6) el.playbackRate = want;
+      }
     } else {
       if (!el.paused) el.pause();
       seekTo(m, t);
@@ -2568,14 +2584,18 @@ document.addEventListener('keydown', e => {
 function fullRender() { layout(); playhead = clamp(playhead, 0, projEnd()); renderTL(); renderInspector(); updateCards(); checkAdv(); }
 window.addEventListener('resize', () => renderTL());
 
-let last = performance.now();
+let last = performance.now(), lastDraw = 0;
 function tick(now) {
   const dt = Math.min(.1, (now - last) / 1000); last = now;
   if (rate) {
     if (focus === 'browser') { const d = MEDIA[src.media].dur; src.t += dt * rate; if (src.t >= d) { src.t = d; stop(); } if (src.t <= 0) { src.t = 0; stop(); } }
     else { const e = projEnd(); playhead += dt * rate; if (playhead >= e) { playhead = e; stop(); } if (playhead <= 0) { playhead = 0; stop(); } scrollToPH(); }
   }
-  updatePH(); syncUserMedia(); drawFrame(); drawOverlays(); updateAngles(); updateAudio(); updateMeters(); refreshKF(); requestAnimationFrame(tick);
+  if (typeof followVideoClock === 'function') followVideoClock();
+  updatePH(); syncUserMedia();
+  // the project is 30 fps: redraw the viewer at most 30 times a second instead of 60
+  if (now - lastDraw >= 1000 / FPS - 4 || now < lastDraw) { lastDraw = now; drawFrame(); drawOverlays(); updateAngles(); refreshKF(); }
+  updateAudio(); updateMeters(); requestAnimationFrame(tick);
 }
 
 let newArm = 0;

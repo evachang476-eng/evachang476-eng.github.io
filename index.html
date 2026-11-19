@@ -2055,37 +2055,61 @@ async function renderTimelineAudio(dur) {
     return (bufs[id] = b);
   };
   const curve = (n, f) => { const a = new Float32Array(n); for (let i = 0; i < n; i++) a[i] = f(i / (n - 1)); return a; };
-  // k plays at timeline time absStart; only the part inside [w0, w1] is heard
-  const sched = async (k, absStart, w0, w1, db) => {
+  // reversed copy of the part of a source the clip uses (for clips played backwards)
+  const revBufs = {};
+  const getRev = (id, buf, a, b) => {
+    const key = id + '|' + a + '|' + b; if (revBufs[key]) return revBufs[key];
+    const s0 = Math.max(0, Math.floor(a * buf.sampleRate)), s1 = Math.min(buf.length, Math.ceil(b * buf.sampleRate)), n = Math.max(1, s1 - s0);
+    const r = oc.createBuffer(buf.numberOfChannels, n, buf.sampleRate);
+    for (let c = 0; c < buf.numberOfChannels; c++) { const src = buf.getChannelData(c), dst = r.getChannelData(c); for (let i = 0; i < n; i++) dst[i] = src[s1 - 1 - i] || 0; }
+    return (revBufs[key] = r);
+  };
+  // source time heard at clip-local time lt; a held (freeze-frame) clip keeps its sound going from the hold point
+  const heardAt = (k, lt) => k.hold ? k.in + lt : srcAt(k, lt);
+  // k starts at timeline time absStart and runs `mul` times faster than its own clip time (speed of the
+  // compound clips around it); only the part inside [w0, w1] is heard
+  const sched = async (k, absStart, w0, w1, db, mul) => {
     if (k.enabled === false) return;
     if (k.media === 'gap' || k.media === 'title') return;
     const m = MEDIA[k.media]; if (!m) return;
     if (roleOff.has(audioRole(k))) return;
-    const L = len(k), p0 = Math.max(absStart, w0), p1 = Math.min(absStart + L, w1); if (p1 - p0 < .005) return;
-    const vol = db + (k.vol || 0), g = t => Math.pow(10, vol / 20) * fadeGain(k, t - absStart);
+    const L = len(k) / mul, p0 = Math.max(absStart, w0), p1 = Math.min(absStart + L, w1); if (p1 - p0 < .005) return;
+    const vol = db + (k.vol || 0), lt = t => (t - absStart) * mul;
     if (m.compound) {
-      if (k.hold || k.rev || k.speed !== 1) return; // only plain compound clips carry sound in the export
-      let acc = 0; for (const q of m.clips) { await sched(q, absStart + acc - k.in, p0, p1, vol); acc += len(q); }
+      if (k.hold) return; // a frozen compound clip has no single sound to continue
+      // inner time u ↔ outer time t:  u = k.in + lt(t)*k.speed  (or k.out − … when reversed)
+      const sp = mul * k.speed; let acc = 0;
+      for (const q of m.clips) {
+        const qs = k.rev ? absStart + (k.out - (acc + len(q))) / sp : absStart + (acc - k.in) / sp;
+        await sched(k.rev ? { ...q, rev: !q.rev } : q, qs, p0, p1, vol, sp); acc += len(q);
+      }
       return;
     }
     const id = mediaOf(k), mm = MEDIA[id]; if (!mm || mm.img) return;
     const n = Math.max(2, Math.ceil((p1 - p0) * 200)), gain = oc.createGain();
-    gain.gain.setValueCurveAtTime(curve(n, u => g(p0 + u * (p1 - p0))), p0, p1 - p0); gain.connect(oc.destination);
+    gain.gain.setValueCurveAtTime(curve(n, u => Math.pow(10, vol / 20) * fadeGain(k, lt(p0 + u * (p1 - p0)))), p0, p1 - p0); gain.connect(oc.destination);
     if (mm.user) {
-      if (k.hold || k.rev) return;
       const buf = await getBuf(id); if (!buf) return;
-      const s = oc.createBufferSource(); s.buffer = buf; s.playbackRate.value = k.speed; s.connect(gain);
-      s.start(p0, Math.max(0, srcAt(k, p0 - absStart))); s.stop(p1);
+      const s = oc.createBufferSource(); s.connect(gain);
+      if (k.rev && !k.hold) {
+        // play a reversed copy forwards: reversed position = how far we are from the clip's out point
+        s.buffer = getRev(id, buf, k.in, k.out); s.playbackRate.value = k.speed * mul;
+        s.start(p0, Math.max(0, lt(p0) * k.speed));
+      } else {
+        s.buffer = buf; s.playbackRate.value = (k.hold ? 1 : k.speed) * mul;
+        s.start(p0, Math.max(0, heardAt(k, lt(p0))));
+      }
+      s.stop(p1);
     } else if (mm.type === 'audio') {
       // the built-in music: same notes as the live preview
       const o = oc.createOscillator(); o.type = 'triangle'; const f = oc.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 1800;
-      const env = oc.createGain();
-      o.frequency.setValueCurveAtTime(curve(n, u => NOTES[Math.floor(srcAt(k, p0 + u * (p1 - p0) - absStart) * 4) % 8]), p0, p1 - p0);
-      env.gain.setValueCurveAtTime(curve(n, u => { const b = srcAt(k, p0 + u * (p1 - p0) - absStart) * 4; return .14 * Math.exp(-(b % 1) * 2.5); }), p0, p1 - p0);
+      const env = oc.createGain(), st = u => heardAt(k, lt(p0 + u * (p1 - p0)));
+      o.frequency.setValueCurveAtTime(curve(n, u => NOTES[((Math.floor(st(u) * 4) % 8) + 8) % 8]), p0, p1 - p0);
+      env.gain.setValueCurveAtTime(curve(n, u => { const b = st(u) * 4; return .14 * Math.exp(-(((b % 1) + 1) % 1) * 2.5); }), p0, p1 - p0);
       o.connect(f).connect(env).connect(gain); o.start(p0); o.stop(p1);
     }
   };
-  for (const k of [...S.primary, ...S.connected]) await sched(k, k._start, 0, dur, 0);
+  for (const k of [...S.primary, ...S.connected]) await sched(k, k._start, 0, dur, 0, 1);
   return oc.startRendering();
 }
 function recordTimelineWC(mbps, onProgress) {

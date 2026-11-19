@@ -2024,11 +2024,95 @@ function help() {
 }
 let exTimer, exAbort = null;
 /* ---------- real export: play the timeline once and record the viewer + sound into a video file ---------- */
+/* render the viewer at 1920×1080 while exporting: every drawing call is written for 960×540, so scale the base transform ×2 */
+const HIRES = 2; let exportFrameHook = null;
+function hiresOn() {
+  cv.width = W * HIRES; cv.height = H * HIRES;
+  const st = CanvasRenderingContext2D.prototype.setTransform, di = CanvasRenderingContext2D.prototype.drawImage;
+  ctx.setTransform = function (a, b, c, d, e, f) { return typeof a === 'object' ? st.call(this, a) : st.call(this, a * HIRES, b * HIRES, c * HIRES, d * HIRES, e * HIRES, f * HIRES); };
+  ctx.drawImage = function (img, ...r) { return img === cv && r.length === 8 ? di.call(this, img, r[0] * HIRES, r[1] * HIRES, r[2] * HIRES, r[3] * HIRES, r[4], r[5], r[6], r[7]) : di.call(this, img, ...r); };
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+function hiresOff() { delete ctx.setTransform; delete ctx.drawImage; cv.width = W; cv.height = H; }
+function loadMuxer() { return import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/+esm'); }
+async function pickVideoCodec(w, h, bps) {
+  for (const codec of ['avc1.640028', 'avc1.4d0028', 'avc1.42002a']) { try { const s = await VideoEncoder.isConfigSupported({ codec, width: w, height: h, bitrate: bps, framerate: FPS }); if (s.supported) return codec; } catch (e) { } }
+  return null;
+}
+async function pickAudioCodec(sr, ch) {
+  for (const [codec, mux] of [['mp4a.40.2', 'aac'], ['opus', 'opus']]) { try { const s = await AudioEncoder.isConfigSupported({ codec, sampleRate: sr, numberOfChannels: ch, bitrate: 160000 }); if (s.supported) return { codec, mux }; } catch (e) { } }
+  return null;
+}
+/* MP4 built frame by frame (WebCodecs + mp4-muxer): has a proper index, so players can drag the time bar */
+function recordTimelineWC(mbps, onProgress) {
+  return new Promise(async (resolve, reject) => {
+    const dur = projEnd(), OW = W * HIRES, OH = H * HIRES, bps = mbps * 1e6;
+    let mod, vcodec;
+    try { mod = await loadMuxer(); } catch (e) { return reject(new Error('載入輸出元件失敗，請確認有連上網路')); }
+    vcodec = await pickVideoCodec(OW, OH, bps); if (!vcodec) return reject(new Error('這台電腦的瀏覽器不支援 H.264 編碼'));
+    initAudio(); try { if (actx && actx.state === 'suspended') await actx.resume(); } catch (e) { }
+    const saved = { sel, safeOn, soundOn, focus, proxyView, scopeOn };
+    sel = null; selSet.clear(); safeOn = false; scopeOn = false; soundOn = true; proxyView = false; hover = null; skimT = null; focus = 'timeline';
+    stop(); playhead = 0; hiresOn(); fullRender();
+    // sound: everything the speakers play also goes into the file
+    let dest = null, reader = null, atrack = null, acfg = null, first = null;
+    const users = ORDER.map(id => MEDIA[id]).filter(m => m && m.user && m.el && !m.img);
+    if (actx && window.MediaStreamTrackProcessor && window.AudioEncoder) {
+      dest = actx.createMediaStreamDestination(); try { gn.connect(dest); } catch (e) { }
+      for (const m of users) {
+        if (!m.asrc) { try { m.asrc = actx.createMediaElementSource(m.el); m.asrc.connect(actx.destination); } catch (e) { } }
+        if (m.asrc) try { m.asrc.connect(dest); } catch (e) { }
+      }
+      atrack = dest.stream.getAudioTracks()[0];
+      try { reader = new MediaStreamTrackProcessor({ track: atrack }).readable.getReader(); const r = await reader.read(); first = r.value; } catch (e) { reader = null; }
+      if (first) { acfg = await pickAudioCodec(first.sampleRate, first.numberOfChannels); acfg = acfg && { ...acfg, sampleRate: first.sampleRate, ch: first.numberOfChannels }; first.close(); }
+    }
+    let recording = false, done = false, failed = null, frameN = 0, lastTs = -1, watch = null;
+    const muxer = new mod.Muxer({ target: new mod.ArrayBufferTarget(), fastStart: 'in-memory', firstTimestampBehavior: 'offset',
+      video: { codec: 'avc', width: OW, height: OH, frameRate: FPS }, audio: acfg ? { codec: acfg.mux, numberOfChannels: acfg.ch, sampleRate: acfg.sampleRate } : undefined });
+    const fail = e => { if (!failed) failed = e; };
+    const venc = new VideoEncoder({ output: (c, m) => muxer.addVideoChunk(c, m), error: fail });
+    venc.configure({ codec: vcodec, width: OW, height: OH, bitrate: bps, framerate: FPS });
+    let aenc = null;
+    if (acfg) { aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: fail }); aenc.configure({ codec: acfg.codec, sampleRate: acfg.sampleRate, numberOfChannels: acfg.ch, bitrate: 160000 }); }
+    const pump = async () => { while (reader && !done) { let r; try { r = await reader.read(); } catch (e) { break; } if (r.done) break; const d = r.value; if (recording && aenc && aenc.state === 'configured') { try { aenc.encode(d); } catch (e) { fail(e); } } d.close(); } };
+    if (reader) pump();
+    const cleanup = () => {
+      done = true; recording = false; exportFrameHook = null; clearInterval(watch); stop(); exAbort = null;
+      if (reader) reader.cancel().catch(() => { }); if (atrack) atrack.stop();
+      if (dest) { try { gn.disconnect(dest); } catch (e) { } for (const m of users) if (m.asrc) try { m.asrc.disconnect(dest); } catch (e) { } }
+      hiresOff();
+      sel = saved.sel; safeOn = saved.safeOn; scopeOn = saved.scopeOn; soundOn = saved.soundOn; proxyView = saved.proxyView; focus = saved.focus; fullRender();
+    };
+    exAbort = () => { cleanup(); try { venc.close(); } catch (e) { } try { aenc && aenc.close(); } catch (e) { } resolve(null); };
+    exportFrameHook = () => {
+      if (!recording || failed) return;
+      const ts = Math.round(playhead * 1e6); if (ts <= lastTs) return; lastTs = ts;
+      try { const f = new VideoFrame(cv, { timestamp: ts, duration: Math.round(1e6 / FPS) }); venc.encode(f, { keyFrame: frameN % (FPS * 2) === 0 }); f.close(); frameN++; } catch (e) { fail(e); }
+    };
+    const finish = async () => {
+      recording = false;
+      try { await venc.flush(); if (aenc) await aenc.flush(); if (failed) throw failed; muxer.finalize(); const buf = muxer.target.buffer; cleanup(); try { venc.close(); aenc && aenc.close(); } catch (e) { } resolve(new Blob([buf], { type: 'video/mp4' })); }
+      catch (e) { cleanup(); reject(e); }
+    };
+    setTimeout(() => {
+      if (done) return;
+      recording = true; playhead = 0; togglePlay();
+      watch = setInterval(() => {
+        onProgress(clamp(playhead / Math.max(dur, .001), 0, 1), document.hidden);
+        if (failed) { clearInterval(watch); cleanup(); reject(failed); return; }
+        if (!rate || playhead >= dur - .001) { clearInterval(watch); exportFrameHook && exportFrameHook(); setTimeout(finish, 200); }
+      }, 100);
+    }, 700);
+  });
+}
 function exFormats() {
   const list = [['mp4', 'video/mp4;codecs=avc1.42E01F,mp4a.40.2', 'MP4（H.264，手機電腦都能播，建議）'], ['mp4', 'video/mp4;codecs=avc1.42E01F,opus', 'MP4（H.264）'], ['mp4', 'video/mp4', 'MP4'],
-    ['webm', 'video/webm;codecs=vp9,opus', 'WebM（VP9）'], ['webm', 'video/webm;codecs=vp8,opus', 'WebM（VP8）'], ['webm', 'video/webm', 'WebM']];
+    ['webm', 'video/webm;codecs=vp9,opus', 'WebM（VP9，部分播放器不能拖曳時間）'], ['webm', 'video/webm;codecs=vp8,opus', 'WebM（VP8，部分播放器不能拖曳時間）'], ['webm', 'video/webm', 'WebM（部分播放器不能拖曳時間）']];
   const out = [], seen = new Set();
+  if (window.VideoEncoder && window.VideoFrame) out.push(['mp4', 'wc', 'MP4（H.264，1920×1080，可以拖曳時間，建議）']);
   if (!window.MediaRecorder || !cv.captureStream) return out;
+  if (out.length) seen.add('mp4');
   for (const f of list) { try { if (!seen.has(f[0]) && MediaRecorder.isTypeSupported(f[1])) { seen.add(f[0]); out.push(f); } } catch (e) { } }
   return out;
 }
@@ -2043,7 +2127,7 @@ function recordTimeline(fmt, mbps, onProgress) {
     initAudio(); try { if (actx && actx.state === 'suspended') await actx.resume(); } catch (e) { }
     const saved = { sel, safeOn, soundOn, focus, proxyView, scopeOn };
     sel = null; selSet.clear(); safeOn = false; soundOn = true; proxyView = false; hover = null; skimT = null; focus = 'timeline';
-    stop(); playhead = 0; fullRender();
+    stop(); playhead = 0; hiresOn(); fullRender();
     let dest = null; const users = ORDER.map(id => MEDIA[id]).filter(m => m && m.user && m.el && !m.img);
     if (actx) {
       dest = actx.createMediaStreamDestination(); try { gn.connect(dest); } catch (e) { }
@@ -2060,7 +2144,7 @@ function recordTimeline(fmt, mbps, onProgress) {
     const cleanup = () => {
       clearInterval(watch); stop(); exAbort = null;
       if (dest) { try { gn.disconnect(dest); } catch (e) { } for (const m of users) if (m.asrc) try { m.asrc.disconnect(dest); } catch (e) { } }
-      vstream.getTracks().forEach(t => t.stop());
+      vstream.getTracks().forEach(t => t.stop()); hiresOff();
       sel = saved.sel; safeOn = saved.safeOn; soundOn = saved.soundOn; proxyView = saved.proxyView; focus = saved.focus; fullRender();
     };
     rec.onstop = () => { cleanup(); resolve(cancelled ? null : new Blob(chunks, { type: fmt[1].split(';')[0] })); };
@@ -2083,11 +2167,11 @@ function opExport() {
   openModal(`<h3>輸出檔案</h3><p class="muted">會從頭到尾播放一次時間線，邊播邊錄成真正的影片檔，所以要等跟影片一樣長的時間。輸出時不要切到別的分頁或把視窗縮小，不然畫面會停住。</p>
   <label for="ex-name">檔名<input id="ex-name" value="我的第一支影片"></label>
   ${fmts.length ? `<label for="ex-fmt">格式<select id="ex-fmt">${fmts.map((f, i) => `<option value="${i}">${f[2]}</option>`).join('')}</select></label>
-  <label for="ex-q">畫質<select id="ex-q"><option value="8">高（約 8 Mbps）</option><option value="4" selected>標準（約 4 Mbps）</option><option value="2">小檔案（約 2 Mbps）</option></select></label>` : '<p><b>這個瀏覽器不能錄影片。</b>請改用電腦版最新的 Chrome 或 Edge。</p>'}
+  <label for="ex-q">畫質<select id="ex-q"><option value="20">高（約 20 Mbps）</option><option value="10" selected>標準（約 10 Mbps）</option><option value="5">小檔案（約 5 Mbps）</option></select></label>` : '<p><b>這個瀏覽器不能錄影片。</b>請改用電腦版最新的 Chrome 或 Edge。</p>'}
   <p class="ex-sum" id="ex-sum"></p>
   <div class="prog" id="ex-prog" hidden><i></i></div><p id="ex-msg"></p>
   <div class="dlg-act"><button class="btn" data-close type="button" id="ex-cancel">取消</button><button class="btn primary" id="ex-go" type="button"${fmts.length ? '' : ' disabled'}>輸出</button><button class="btn" id="ex-comp" type="button">Send to Compressor…</button></div>`);
-  const sum = () => { const mb = fmts.length ? dur * +$('#ex-q').value / 8 : 0; $('#ex-sum').textContent = `長度 ${fmtTC(dur)} · 主故事線 ${n} 段 · 畫面 ${cv.width} × ${cv.height} · ${FPS} fps` + (fmts.length ? ` · 預估約 ${Math.max(1, Math.round(mb))} MB · 需要約 ${Math.ceil(dur) + 1} 秒` : ''); };
+  const sum = () => { const mb = fmts.length ? dur * +$('#ex-q').value / 8 : 0; $('#ex-sum').textContent = `長度 ${fmtTC(dur)} · 主故事線 ${n} 段 · 畫面 ${W * HIRES} × ${H * HIRES} · ${FPS} fps` + (fmts.length ? ` · 預估約 ${Math.max(1, Math.round(mb))} MB · 需要約 ${Math.ceil(dur) + 1} 秒` : ''); };
   if (fmts.length) $('#ex-q').onchange = sum; sum();
   $('#ex-comp').onclick = () => { closeModal(); sendToCompressor(); };
   $('#ex-go').onclick = async () => {
@@ -2096,10 +2180,11 @@ function opExport() {
     go.disabled = true; $('#ex-fmt').disabled = $('#ex-q').disabled = $('#ex-name').disabled = true; $('#ex-comp').hidden = true;
     $('#ex-prog').hidden = false; const msg = $('#ex-msg'); msg.textContent = '準備中…';
     try {
-      const blob = await recordTimeline(fmt, mbps, (p, hidden) => {
+      const prog = (p, hidden) => {
         $('#ex-prog i').style.width = (p * 100).toFixed(1) + '%';
         msg.textContent = hidden ? '⚠ 視窗被切走了，畫面會停住。請切回這個分頁。' : `輸出中… ${Math.round(p * 100)}%（${fmtTC(p * dur)} / ${fmtTC(dur)}）`;
-      });
+      };
+      const blob = fmt[1] === 'wc' ? await recordTimelineWC(mbps, prog) : await recordTimeline(fmt, mbps, prog);
       if (!blob) return; // cancelled
       const file = `${name}.${fmt[0]}`, url = downloadBlob(blob, file);
       $('#ex-prog i').style.width = '100%';
@@ -2656,7 +2741,7 @@ function tick(now) {
   if (typeof followVideoClock === 'function') followVideoClock();
   updatePH(); syncUserMedia();
   // the project is 30 fps: redraw the viewer at most 30 times a second instead of 60
-  if (now - lastDraw >= 1000 / FPS - 4 || now < lastDraw) { lastDraw = now; drawFrame(); drawOverlays(); updateAngles(); refreshKF(); }
+  if (now - lastDraw >= 1000 / FPS - 4 || now < lastDraw) { lastDraw = now; drawFrame(); drawOverlays(); updateAngles(); refreshKF(); if (exportFrameHook) exportFrameHook(); }
   updateAudio(); updateMeters(); requestAnimationFrame(tick);
 }
 

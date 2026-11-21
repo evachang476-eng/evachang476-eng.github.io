@@ -286,6 +286,18 @@ svg.i { width: 16px; height: 16px; display: block; fill: none; stroke: currentCo
 .ae-it:has(input:checked) { border-color: var(--sel); }
 .dlg label.ae-chk { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
 .dlg label.ae-chk input { width: auto; margin: 0; }
+.lk-grid, .tb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin: 8px 0 12px; }
+.lk { display: grid; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: none; color: inherit; cursor: pointer; font: inherit; font-size: 12.5px; text-align: center; }
+.lk img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; display: block; }
+.lk:hover, .lk:focus-visible { border-color: var(--sel); outline: none; }
+.tb-grid button { display: grid; gap: 2px; text-align: left; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: none; color: inherit; cursor: pointer; font: inherit; }
+.tb-grid button:hover, .tb-grid button:focus-visible { border-color: var(--sel); outline: none; }
+.tb-grid span { font-size: 12px; color: var(--muted); }
+.sn-list, .pf-list { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 6px; max-height: 320px; overflow: auto; }
+.sn-list li { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.pf-list button { width: 100%; display: grid; grid-template-columns: 92px 1fr auto; gap: 8px; align-items: baseline; text-align: left; padding: 7px 10px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 4px; background: none; color: inherit; cursor: pointer; font: inherit; font-size: 12.5px; }
+.pf-list small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.pf-bad button { border-left-color: #e5534b; } .pf-warn button { border-left-color: #e0a030; } .pf-ok button { border-left-color: #3fb950; }
 .ep .tag { font-size: 11px; color: var(--ok); }
 .ep .tag.no { color: var(--muted); }
 #modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: grid; place-items: center; z-index: 70; padding: 16px; }
@@ -2338,6 +2350,7 @@ function recordTimelineWC(mbps, onProgress) {
       if (acfg) {
         onProgress(0, false, '處理聲音中…');
         const ab = await renderTimelineAudio(dur); if (cancelled) throw 0;
+        if (typeof exNormalize !== 'undefined' && exNormalize) { onProgress(0, false, '把音量標準化到 -14 LUFS…'); await normalizeLoudness(ab, -14); }
         const aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: fail });
         aenc.configure({ codec: acfg.codec, sampleRate: 48000, numberOfChannels: 2, bitrate: 160000 });
         const L = ab.getChannelData(0), R = ab.numberOfChannels > 1 ? ab.getChannelData(1) : L;
@@ -2434,15 +2447,19 @@ function opExport() {
   openModal(`<h3>輸出檔案</h3><p class="muted">MP4 會一格一格算出每個畫面、另外混好聲音，所以輸出的長度一定跟時間線一樣，電腦慢只是等比較久（大約是影片長度的 1～3 倍）。輸出時最好停在這個分頁。</p>
   <label for="ex-name">檔名<input id="ex-name" value="我的第一支影片"></label>
   ${fmts.length ? `<label for="ex-fmt">格式<select id="ex-fmt">${fmts.map((f, i) => `<option value="${i}">${f[2]}</option>`).join('')}</select></label>
-  <label for="ex-q">畫質<select id="ex-q"><option value="20">高（約 20 Mbps）</option><option value="10" selected>標準（約 10 Mbps）</option><option value="5">小檔案（約 5 Mbps）</option></select></label>` : '<p><b>這個瀏覽器不能錄影片。</b>請改用電腦版最新的 Chrome 或 Edge。</p>'}
+  <label for="ex-q">畫質<select id="ex-q"><option value="20">高（約 20 Mbps）</option><option value="10" selected>標準（約 10 Mbps）</option><option value="5">小檔案（約 5 Mbps）</option></select></label>
+  <label class="ae-chk"><input type="checkbox" id="ex-norm" checked> 音量自動標準化到 -14 LUFS，峰值不超過 -1 dB（YouTube／IG 的標準，不會忽大忽小也不會破音；只用在 MP4）</label>
+  <p style="margin:2px 0 0"><button class="btn" type="button" id="ex-pf">✅ 先做交片前檢查</button></p>` : '<p><b>這個瀏覽器不能錄影片。</b>請改用電腦版最新的 Chrome 或 Edge。</p>'}
   <p class="ex-sum" id="ex-sum"></p>
   <div class="prog" id="ex-prog" hidden><i></i></div><p id="ex-msg"></p>
   <div class="dlg-act"><button class="btn" data-close type="button" id="ex-cancel">取消</button><button class="btn primary" id="ex-go" type="button"${fmts.length ? '' : ' disabled'}>輸出</button><button class="btn" id="ex-comp" type="button">Send to Compressor…</button></div>`);
   const sum = () => { const mb = fmts.length ? dur * +$('#ex-q').value / 8 : 0; $('#ex-sum').textContent = `長度 ${fmtTC(dur)} · 主故事線 ${n} 段 · 畫面 ${W * HIRES} × ${H * HIRES} · ${FPS} fps` + (fmts.length ? ` · 預估約 ${Math.max(1, Math.round(mb))} MB` : ''); };
   if (fmts.length) $('#ex-q').onchange = sum; sum();
   $('#ex-comp').onclick = () => { closeModal(); sendToCompressor(); };
+  if ($('#ex-pf')) $('#ex-pf').onclick = () => { closeModal(); if (typeof openPreflight === 'function') openPreflight(); };
   $('#ex-go').onclick = async () => {
     const go = $('#ex-go'); if (go.dataset.done) return closeModal();
+    if (typeof exNormalize !== 'undefined') exNormalize = !!($('#ex-norm') && $('#ex-norm').checked);
     const fmt = fmts[+$('#ex-fmt').value], mbps = +$('#ex-q').value, name = ($('#ex-name').value || '未命名').replace(/[\\/:*?"<>|]/g, '_').trim() || '未命名';
     go.disabled = true; $('#ex-fmt').disabled = $('#ex-q').disabled = $('#ex-name').disabled = true; $('#ex-comp').hidden = true;
     $('#ex-prog').hidden = false; const msg = $('#ex-msg'); msg.textContent = '準備中…';
@@ -5024,6 +5041,238 @@ MENUS.File.splice(3, 0, ['🤖 Claude AI Edit', 'Claude 全 AI 剪輯（在 clau
 $('#bt-auto').insertAdjacentHTML('afterend', '<button class="tb" id="bt-claude" type="button" title="Claude 全 AI 剪輯" aria-label="Claude 全 AI 剪輯">🤖</button>');
 $('#bt-claude').onclick = openClaudeEdit;
 MISSIONS.push({ id: 'claudeedit', adv: 1, t: () => `<b>Claude 全 AI 剪輯</b>　在 claude.ai 打開練習室，按上方的 🤖，寫一句你想要的影片，讓 Claude 規劃整支影片，再請它修改一次` });
+/* =====================================================================
+   工具箱：自動剪掉停頓、節拍標記、一鍵風格、版本快照、輸出封面圖、
+   響度標準化、交片前檢查
+   ===================================================================== */
+const ptSelClips = () => { const ids = [sel, ...selSet].filter(x => x != null); return S.primary.filter(c => ids.includes(c.uid)); };
+async function ptDecode(id) { // the source audio of an imported clip (null when it has none)
+  const m = MEDIA[id]; if (!m || !m.user || !m.el) return null;
+  try { const ac = new OfflineAudioContext(1, 44100, 44100); return await ac.decodeAudioData(await (await fetch(m.el.src)).arrayBuffer()); } catch (e) { return null; }
+}
+
+/* ---------- 🔇 自動剪掉停頓 ---------- */
+// find the stretches where someone is talking: 20 ms loudness frames, threshold a few dB above the room noise
+function ptSpeech(buf, a, b, sens) {
+  const ch = buf.getChannelData(0), sr = buf.sampleRate, hop = Math.round(sr * .02), f0 = Math.floor(a * sr / hop), f1 = Math.floor(b * sr / hop), db = [];
+  for (let f = f0; f < f1; f++) { let s = 0; for (let i = f * hop; i < (f + 1) * hop && i < ch.length; i++) s += ch[i] * ch[i]; db.push(10 * Math.log10(s / hop + 1e-12)); }
+  if (!db.length) return [];
+  const sorted = [...db].sort((x, y) => x - y), floor = sorted[Math.floor(sorted.length * .15)], peak = sorted[Math.floor(sorted.length * .95)];
+  const thr = Math.max(-55, floor + (peak - floor) * (.18 + (1 - sens) * .17));
+  const segs = []; let st = null;
+  db.forEach((v, i) => { const t = a + i * .02; if (v > thr) { if (st == null) st = t; } else if (st != null) { segs.push([st, t]); st = null; } });
+  if (st != null) segs.push([st, b]);
+  // join words separated by short breaths, drop clicks, pad so syllables are not clipped
+  const out = []; for (const s of segs) { const l = out[out.length - 1]; if (l && s[0] - l[1] < .35) l[1] = s[1]; else out.push([...s]); }
+  return out.filter(s => s[1] - s[0] > .18).map(([x, y]) => [Math.max(a, x - .1), Math.min(b, y + .12)]);
+}
+async function openSilence() {
+  let targets = ptSelClips().filter(c => MEDIA[c.media] && MEDIA[c.media].user && MEDIA[c.media].type === 'video' && !c.rev && !c.hold && c.speed === 1);
+  if (!targets.length) targets = S.primary.filter(c => MEDIA[c.media] && MEDIA[c.media].user && MEDIA[c.media].type === 'video' && !c.rev && !c.hold && c.speed === 1);
+  openModal(`<h3>🔇 自動剪掉停頓</h3><p class="muted">分析講話的聲音，把「沒有人說話」的空檔剪掉，最適合訪談、Podcast、對鏡頭說話的影片。可以按 ${kbd('⌘Z')} 復原。</p>
+  <p>要處理的片段：<b>${targets.length ? targets.map(c => esc(cname(c))).join('、') : '時間線上沒有你自己匯入的影片'}</b>${targets.length ? '' : '<br><small class="muted">先匯入自己的影片並放進主故事線（只處理正常速度的片段）。</small>'}</p>
+  <label for="sil-sens">靈敏度<select id="sil-sens"><option value=".35">保守（只剪很長的停頓）</option><option value=".6" selected>標準</option><option value=".85">積極（連短停頓也剪）</option></select></label>
+  <label for="sil-min">停頓多久才剪<select id="sil-min"><option value=".35">0.35 秒（節奏很快）</option><option value=".6" selected>0.6 秒</option><option value="1">1 秒（保留自然停頓）</option></select></label>
+  <label class="ae-chk"><input type="checkbox" id="sil-punch" checked> 跳接處交錯放大 110%（Punch-in），讓剪接點看起來像換了機位</label>
+  <p id="sil-msg"></p><div class="dlg-act"><button class="btn" data-close type="button">取消</button><button class="btn primary" id="sil-go" type="button" ${targets.length ? '' : 'disabled'}>開始</button></div>`);
+  $('#sil-go').onclick = async () => {
+    const go = $('#sil-go'); if (go.dataset.done) return closeModal();
+    const sens = +$('#sil-sens').value, minGap = +$('#sil-min').value, punch = $('#sil-punch').checked, msg = $('#sil-msg');
+    go.disabled = true; msg.textContent = '分析聲音中…';
+    const plans = [];
+    for (const c of targets) {
+      const buf = await ptDecode(c.media); if (!buf) { msg.textContent = `「${cname(c)}」讀不到聲音，略過`; continue; }
+      let segs = ptSpeech(buf, c.in, c.out, sens);
+      // only cut silences longer than the chosen length: merge segments whose gap is shorter
+      const merged = []; for (const s of segs) { const l = merged[merged.length - 1]; if (l && s[0] - l[1] < minGap) l[1] = s[1]; else merged.push([...s]); }
+      if (merged.length) plans.push({ c, segs: merged });
+    }
+    if (!plans.length) { msg.textContent = '沒有找到可以剪的停頓（或片段沒有聲音）。'; go.disabled = false; return; }
+    let removed = 0, cuts = 0;
+    edit(() => {
+      for (const { c, segs } of plans) {
+        const i = S.primary.indexOf(c); if (i < 0) continue;
+        const parts = segs.map(([a, b], j) => { const n = JSON.parse(JSON.stringify(c)); n.uid = S.nextId++; n.in = +a.toFixed(3); n.out = +b.toFixed(3); n.trans = j ? 0 : c.trans; n.kf = {}; n.markers = (c.markers || []).filter(m => c.in + m.t >= a && c.in + m.t < b).map(m => ({ ...m, t: c.in + m.t - a })); delete n._start; if (punch && j % 2 === 1) n.scale = +((c.scale || 1) * 1.1).toFixed(3); return n; });
+        removed += (c.out - c.in) - parts.reduce((q, p) => q + (p.out - p.in), 0); cuts += parts.length - 1;
+        // things connected to the old clip follow the part that shows the same moment
+        for (const k of S.connected) if (k.anchor === c.uid) {
+          const src = c.in + k.offset; let host = parts.find(p => src >= p.in && src < p.out) || parts.find(p => p.in >= src) || parts[parts.length - 1];
+          k.anchor = host.uid; k.offset = Math.max(0, src - host.in);
+        }
+        S.primary.splice(i, 1, ...parts);
+      }
+      sel = null;
+    });
+    mark('silence');
+    msg.innerHTML = `完成！剪掉 <b>${removed.toFixed(1)} 秒</b>的停頓，切成 ${cuts} 個跳接${punch ? '，跳接處交錯放大，像換了機位' : ''}。按空白鍵聽聽看，不滿意按 ${kbd('⌘Z')}。`;
+    go.disabled = false; go.textContent = '完成'; go.dataset.done = '1';
+  };
+}
+
+/* ---------- 🎵 節拍標記 ---------- */
+async function beatMarkers() {
+  let c = ptSelClips().concat(S.connected.filter(k => k.uid === sel)).find(k => kind(k) === 'audio') || S.connected.find(k => kind(k) === 'audio');
+  if (!c) return toast('', '時間線上沒有音樂：先用 Q 放一首音樂，再選它執行節拍標記');
+  toast('', '偵測節拍中…');
+  const b = await aeBeat(c.media); if (!b.period) return toast('', '這首音樂找不到清楚的節拍');
+  let n = 0;
+  edit(() => {
+    c.markers = (c.markers || []).filter(m => m.kind !== 'beat');
+    for (let s = c.in + ((b.phase - c.in) % b.period + b.period) % b.period, i = 0; s < c.out; s += b.period, i++) {
+      const t = +((s - c.in) / c.speed).toFixed(3); const bar = Math.round((s - b.phase) / b.period) % 4 === 0;
+      c.markers.push({ t, name: bar ? '♪ 重拍' : '♪', kind: 'beat' }); n++;
+    }
+  });
+  toast('', `在音樂上標了 ${n} 個節拍（約 ${Math.round(60 / b.period)} BPM）。吸附打開時（N），拖片段邊緣會自動對齊節拍`); mark('beats');
+}
+// snapping also sticks to markers (beats, notes)
+function snapT(t, ex) {
+  if (!snapOn) return t; const cands = [0, playhead];
+  for (const c of [...S.primary, ...S.connected]) { if (c === ex) continue; cands.push(c._start, c._start + len(c)); for (const m of c.markers || []) cands.push(c._start + m.t); }
+  let best = t, bd = 8 / pps; for (const v of cands) { const d = Math.abs(v - t); if (d < bd) { bd = d; best = v; } } return best;
+}
+
+/* ---------- 🎨 一鍵風格 ---------- */
+const LOOKS = [
+  { id: 'none', name: '原色', css: 'none', apply: k => { } },
+  { id: 'warm', name: '暖陽日常', css: 'sepia(.14) saturate(.92) brightness(1.03)', apply: k => { k.sat = .92; k.bright = 1.03; k.fx.push({ type: 'sepia', amt: 14, look: 1 }); } },
+  { id: 'clean', name: '日系清新', css: 'brightness(1.08) saturate(.82) contrast(.92)', apply: k => { k.sat = .82; k.bright = 1.08; } },
+  { id: 'film', name: '復古底片', css: 'sepia(.25) saturate(.8) contrast(1.05)', apply: k => { k.sat = .8; k.fx.push({ type: 'sepia', amt: 25, look: 1 }, { type: 'grain', amt: 25, look: 1 }, { type: 'vignette', amt: 35, look: 1 }); } },
+  { id: 'cine', name: '電影冷調', css: 'hue-rotate(-8deg) saturate(.85) contrast(1.08)', apply: k => { k.sat = .85; k.fx.push({ type: 'hue', amt: -8, look: 1 }, { type: 'vignette', amt: 45, look: 1 }); } },
+  { id: 'vivid', name: '鮮豔旅行', css: 'saturate(1.3) brightness(1.03)', apply: k => { k.sat = 1.3; k.bright = 1.03; } },
+  { id: 'bw', name: '黑白經典', css: 'grayscale(1) contrast(1.1)', apply: k => { k.fx.push({ type: 'bw', amt: 100, look: 1 }, { type: 'vignette', amt: 30, look: 1 }); } },
+];
+function openLooks() {
+  const vids = S.primary.filter(c => kind(c) === 'video'); if (!vids.length) return toast('', '先放幾段影片到時間線');
+  const one = ptSelClips().filter(c => kind(c) === 'video'), img = THUMB[mediaOf(one[0] || vids[0])] || '';
+  openModal(`<h3>🎨 一鍵風格</h3><p class="muted">一次套用整支影片的色調，讓所有鏡頭看起來像同一部作品。之後還可以在 Color 檢查器微調。</p>
+  <div class="lk-grid">${LOOKS.map(l => `<button class="lk" type="button" data-look="${l.id}"><img src="${img}" alt="" style="filter:${l.css}"><span>${l.name}</span></button>`).join('')}</div>
+  <label class="ae-chk"><input type="checkbox" id="lk-all" ${one.length ? '' : 'checked'}> 套用到時間線上所有影片${one.length ? `（不勾只改選取的 ${one.length} 段）` : ''}</label>
+  <div class="dlg-act"><button class="btn" data-close type="button">關閉</button></div>`);
+  document.querySelectorAll('[data-look]').forEach(b => b.onclick = () => {
+    const L = LOOKS.find(x => x.id === b.dataset.look), list = $('#lk-all').checked ? vids : one;
+    edit(() => { for (const k of list) { k.fx = (k.fx || []).filter(f => !f.look); k.sat = 1; k.bright = 1; L.apply(k); } });
+    toast('', `套用「${L.name}」到 ${list.length} 段影片`); mark('look');
+  });
+}
+
+/* ---------- 💾 版本快照 ---------- */
+const SNAP_KEY = 'fcp-practice-snapshots';
+const snapsGet = () => { try { return JSON.parse(localStorage.getItem(SNAP_KEY) || '[]'); } catch (e) { return []; } };
+const snapsSet = a => { try { localStorage.setItem(SNAP_KEY, JSON.stringify(a.slice(0, 15))); return true; } catch (e) { toast('', '瀏覽器空間不足，存不了更多版本，先刪掉舊的'); return false; } };
+function openSnapshots() {
+  const draw = () => {
+    const a = snapsGet();
+    $('#sn-list').innerHTML = a.length ? a.map((s, i) => `<li><b>${esc(s.name)}</b> <small class="muted">${new Date(s.at).toLocaleString('zh-TW', { hour12: false })} · ${s.n} 段 · ${fmtTC(s.len)}</small> <button class="btn" type="button" data-snr="${i}">還原</button> <button class="btn" type="button" data-snd="${i}">刪除</button></li>`).join('') : '<li class="muted">還沒有存任何版本。</li>';
+    document.querySelectorAll('[data-snr]').forEach(b => b.onclick = () => { const s = snapsGet()[+b.dataset.snr]; aeBuilding = true; try { edit(() => { S = JSON.parse(JSON.stringify(s.S)); sel = null; }); } finally { aeBuilding = false; } setAspect(!!s.vertical, true); fullRender(); toast('', `還原到「${s.name}」（按 ⌘Z 可以回到還原前）`); });
+    document.querySelectorAll('[data-snd]').forEach(b => b.onclick = () => { const a2 = snapsGet(); a2.splice(+b.dataset.snd, 1); snapsSet(a2); draw(); });
+  };
+  openModal(`<h3>💾 版本快照</h3><p class="muted">大改之前先存一個版本，客戶說「還是第一版好」時一鍵救回來。FCP 的做法是 Duplicate Project as Snapshot（${kbd('⇧⌘D')}）。最多保留 15 個。</p>
+  <div class="prow" style="gap:8px"><input id="sn-name" placeholder="版本名稱，例如：給客戶 V1" maxlength="30" style="flex:1"><button class="btn primary" type="button" id="sn-save">存目前版本</button></div>
+  <ul id="sn-list" class="sn-list"></ul><div class="dlg-act"><button class="btn" data-close type="button">關閉</button></div>`);
+  $('#sn-save').onclick = () => {
+    layout(); const a = snapsGet(), name = $('#sn-name').value.trim() || `版本 ${a.length + 1}`;
+    a.unshift({ name, at: Date.now(), S: JSON.parse(JSON.stringify(S)), vertical: H > W, n: S.primary.length, len: projEnd() });
+    if (snapsSet(a)) { $('#sn-name').value = ''; draw(); toast('', `已存版本「${name}」`); mark('snapshot'); }
+  };
+  draw();
+}
+
+/* ---------- 🖼️ 輸出封面圖（目前畫面，1080p） ---------- */
+async function saveCover() {
+  if (!S.primary.length) return toast('', '時間線是空的');
+  hiresOn(); try { drawFrame(); drawOverlays(); const blob = await new Promise(r => cv.toBlob(r, 'image/jpeg', .95)); hiresOff(); fullRender();
+    await saveFile(blob, `封面_${fmtTC(playhead).replace(/:/g, '-')}.jpg`); toast('', `已輸出 ${W * HIRES}×${H * HIRES} 的封面圖`); mark('cover');
+  } catch (e) { hiresOff(); fullRender(); if (!(e && e.code === 'declined')) toast('', '封面圖沒有存下來'); }
+}
+
+/* ---------- 🔊 響度：量測（近似 EBU R128 / ITU BS.1770）與標準化 ---------- */
+async function measureLoudness(ab) {
+  // K-weighting (high-shelf +4 dB around 1.7 kHz, high-pass ~38 Hz), 400 ms blocks, absolute -70 and relative -10 LU gates
+  const oc = new OfflineAudioContext(ab.numberOfChannels, ab.length, ab.sampleRate), s = oc.createBufferSource(); s.buffer = ab;
+  const hs = oc.createBiquadFilter(); hs.type = 'highshelf'; hs.frequency.value = 1681; hs.gain.value = 4;
+  const hp = oc.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 38; hp.Q.value = .5;
+  s.connect(hs).connect(hp).connect(oc.destination); s.start(); const k = await oc.startRendering();
+  const sr = ab.sampleRate, blk = Math.round(sr * .4), step = Math.round(sr * .1), pw = [];
+  for (let o = 0; o + blk <= k.length; o += step) { let z = 0; for (let c = 0; c < k.numberOfChannels; c++) { const d = k.getChannelData(c); let q = 0; for (let i = o; i < o + blk; i++) q += d[i] * d[i]; z += q / blk; } pw.push(z); }
+  const L = p => -.691 + 10 * Math.log10(p + 1e-12), abs = pw.filter(p => L(p) > -70); if (!abs.length) return { lufs: -Infinity, peak: -Infinity };
+  const rel = L(abs.reduce((a, b) => a + b, 0) / abs.length) - 10, g = abs.filter(p => L(p) > rel);
+  let peak = 0; for (let c = 0; c < ab.numberOfChannels; c++) { const d = ab.getChannelData(c); for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i])); }
+  return { lufs: L(g.reduce((a, b) => a + b, 0) / g.length), peak: 20 * Math.log10(peak + 1e-12) };
+}
+async function normalizeLoudness(ab, target = -14) {
+  const m = await measureLoudness(ab); if (!isFinite(m.lufs)) return m;
+  // ceiling -1.5 dBFS: AAC encoding adds a little overshoot, so the finished file still stays under -1 dB
+  const gain = Math.pow(10, clamp(target - m.lufs, -20, 20) / 20), ceil = Math.pow(10, -1.5 / 20), knee = ceil * .85;
+  for (let c = 0; c < ab.numberOfChannels; c++) { const d = ab.getChannelData(c); for (let i = 0; i < d.length; i++) { let y = d[i] * gain; const a = Math.abs(y); if (a > knee) y = Math.sign(y) * (knee + (ceil - knee) * Math.tanh((a - knee) / (ceil - knee))); d[i] = y; } }
+  return { ...m, applied: 20 * Math.log10(gain) };
+}
+var exNormalize = true; // read by the MP4 exporter
+
+/* ---------- ✅ 交片前檢查 ---------- */
+async function openPreflight() {
+  layout(); const issues = [], fr = 1 / FPS, dur = projEnd(), vEnd = S.primary.reduce((q, c) => q + len(c), 0);
+  const add = (lvl, t, text, at) => issues.push({ lvl, t, text, at });
+  if (!S.primary.length) add('bad', '時間線', '時間線是空的', 0);
+  S.primary.forEach((c, i) => {
+    if (c.media === 'gap') add(i === 0 ? 'bad' : 'warn', '間隙', `${fmtTC(c._start)} 有 ${fmtTC(len(c))} 的空白${i === 0 ? '：影片一開頭就是黑畫面' : '（黑畫面）'}`, c._start);
+    else if (len(c) < fr * 3) add('bad', '閃一格', `「${cname(c)}」只有 ${Math.round(len(c) * FPS)} 格，看起來會閃一下（Flash frame）`, c._start);
+    if (c.enabled === false) add('warn', '停用', `「${cname(c)}」被停用了，不會出現在影片裡`, c._start);
+  });
+  for (const c of [...S.primary, ...S.connected]) {
+    const m = MEDIA[c.media]; if (c.media === 'gap' || c.media === 'title') continue;
+    if (!m) add('bad', '離線', `有片段找不到素材（被刪掉了）`, c._start || 0);
+    else if (m.user && !m.ready) add('bad', '離線', `「${m.name}」還沒載入或檔案不見了`, c._start || 0);
+  }
+  for (const c of S.connected) {
+    if (c.media === 'title') { const lines = String(c.text || '').split('\n'), w = Math.max(...lines.map(l => l.length)) * (c.size || 72) * .95; if (Math.abs(c.y || 0) > H * .42 || Math.abs(c.x || 0) + w / 2 > W * .45 || w > W * .9) add('warn', '安全框', `標題「${String(c.text).slice(0, 12)}」可能超出字幕安全框，在手機上會被切掉或擋到`, c._start); }
+    if (kind(c) === 'audio' && c._start + len(c) > vEnd + .5) add('warn', '音樂', `音樂比畫面長 ${fmtTC(c._start + len(c) - vEnd)}：影片最後會變成黑畫面只剩音樂。把音樂修短到畫面結尾，再拉淡出`, vEnd);
+  }
+  openModal(`<h3>✅ 交片前檢查</h3><p class="muted">輸出前自動找出常見問題。點一個項目會把播放頭移到那裡。</p><ul id="pf-list" class="pf-list"><li class="muted">檢查聲音中…</li></ul><div class="dlg-act"><button class="btn" data-close type="button">關閉</button><button class="btn primary" type="button" id="pf-export">沒問題，去輸出</button></div>`);
+  $('#pf-export').onclick = () => { closeModal(); opExport(); };
+  // sound: render the mix and measure it like the platforms do
+  try {
+    if (dur > 0) {
+      const ab = await renderTimelineAudio(dur), m = await measureLoudness(ab);
+      if (!isFinite(m.lufs)) add('warn', '聲音', '整支影片沒有聲音', 0);
+      else {
+        if (m.peak > -1) add('warn', '破音', `聲音峰值 ${m.peak.toFixed(1)} dBFS，超過 -1，可能破音（輸出時勾「響度標準化」會自動處理）`, 0);
+        if (m.lufs < -18) add('warn', '太小聲', `整體響度 ${m.lufs.toFixed(1)} LUFS，比 YouTube／IG 的 -14 小，手機上會聽不清楚（輸出時勾「音量自動標準化」就會修正）`, 0);
+        else if (m.lufs > -10) add('warn', '太大聲', `整體響度 ${m.lufs.toFixed(1)} LUFS，太大聲，平台會自動壓低`, 0);
+        else add('ok', '聲音', `整體響度 ${m.lufs.toFixed(1)} LUFS、峰值 ${m.peak.toFixed(1)} dBFS，正常`, 0);
+      }
+    }
+  } catch (e) { }
+  if (!issues.some(x => x.lvl !== 'ok')) issues.unshift({ lvl: 'ok', t: '全部通過', text: `沒有發現問題，總長 ${fmtTC(dur)}`, at: 0 });
+  const order = { bad: 0, warn: 1, ok: 2 }; issues.sort((a, b) => order[a.lvl] - order[b.lvl]);
+  const list = $('#pf-list'); if (!list) return;
+  list.innerHTML = issues.map((x, i) => `<li class="pf-${x.lvl}"><button type="button" data-pf="${i}"><b>${x.lvl === 'bad' ? '✕' : x.lvl === 'warn' ? '!' : '✓'} ${esc(x.t)}</b><span>${esc(x.text)}</span><small>${fmtTC(x.at)}</small></button></li>`).join('');
+  list.querySelectorAll('[data-pf]').forEach(b => b.onclick = () => { const x = issues[+b.dataset.pf]; focus = 'timeline'; stop(); playhead = clamp(x.at, 0, dur); scrollToPH(); fullRender(); });
+  mark('preflight');
+}
+
+/* ---------- 選單與按鈕 ---------- */
+MENUS.File.splice(4, 0, ['💾 Snapshots…', '版本快照', '⇧⌘D', openSnapshots], ['✅ Preflight Check…', '交片前檢查', '', openPreflight], ['🖼️ Save Current Frame…', '輸出目前畫面當封面圖', '', saveCover]);
+MENUS.Modify.splice(0, 0, ['🔇 Remove Silences…', '自動剪掉停頓（講話的影片）', '', openSilence], ['🎵 Detect Beats', '在音樂上標出節拍', '', beatMarkers], ['🎨 Looks…', '一鍵風格（整支影片的色調）', '', openLooks], '-');
+$('#bt-claude').insertAdjacentHTML('afterend', '<button class="tb" id="bt-tools" type="button" title="工具箱" aria-label="工具箱">🧰</button>');
+function openToolbox() {
+  openModal(`<h3>🧰 工具箱</h3><div class="tb-grid">
+  <button type="button" data-tbx="sil"><b>🔇 自動剪掉停頓</b><span>講話影片一鍵剪掉空檔，跳接處自動放大</span></button>
+  <button type="button" data-tbx="beat"><b>🎵 節拍標記</b><span>音樂標出節拍，剪接點自動吸附</span></button>
+  <button type="button" data-tbx="look"><b>🎨 一鍵風格</b><span>7 種色調，整支影片一次套用</span></button>
+  <button type="button" data-tbx="snap"><b>💾 版本快照</b><span>大改前存一版，隨時還原</span></button>
+  <button type="button" data-tbx="pf"><b>✅ 交片前檢查</b><span>閃格、黑畫面、離線、音量、安全框</span></button>
+  <button type="button" data-tbx="cover"><b>🖼️ 輸出封面圖</b><span>目前畫面存成 1080p 圖片</span></button>
+  </div><div class="dlg-act"><button class="btn" data-close type="button">關閉</button></div>`);
+  document.querySelectorAll('[data-tbx]').forEach(b => b.onclick = () => { closeModal(); ({ sil: openSilence, beat: beatMarkers, look: openLooks, snap: openSnapshots, pf: openPreflight, cover: saveCover })[b.dataset.tbx](); });
+}
+$('#bt-tools').onclick = openToolbox;
+MISSIONS.push(
+  { id: 'silence', adv: 1, t: () => `<b>工具箱 自動剪掉停頓</b>　匯入一段你對著鏡頭講話的影片，放進時間線，Modify › 🔇 Remove Silences` },
+  { id: 'beats', adv: 1, t: () => `<b>工具箱 節拍標記</b>　用 ${kbd('Q')} 放一首音樂，Modify › 🎵 Detect Beats，再拖片段邊緣對齊節拍` },
+  { id: 'look', adv: 1, t: () => `<b>工具箱 一鍵風格</b>　Modify › 🎨 Looks，幫整支影片套一個色調` },
+  { id: 'preflight', adv: 1, t: () => `<b>工具箱 交片前檢查</b>　File › ✅ Preflight Check，把找到的問題修好再輸出` },
+);
 
 renderMissions();
 applyPlugins(); makeFxThumbs(); makeTitleThumbs(); buildFxLists(); buildCards(); renderMissions(); focusPanel('browser'); fullRender(); updatePlayBtn();

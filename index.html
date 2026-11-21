@@ -3997,8 +3997,14 @@ function sampleBackground(c, i) {
   const f = c.fx[i], mid = mediaOf(c), m = MEDIA[mid];
   const cv2 = document.createElement('canvas'); cv2.width = W; cv2.height = H; const x = cv2.getContext('2d');
   drawSource(x, mid, srcAt(c, onClip(c) ? localT(c) : 0)); refCache.set(c.uid + ':' + i, cv2);
-  commit(); f.ref = +srcAt(c, onClip(c) ? localT(c) : 0).toFixed(3); f.refUser = !!(m && m.user);
+  commit(); f.ref = +srcAt(c, onClip(c) ? localT(c) : 0).toFixed(3); f.refUser = !!(m && m.user); f.refPerson = false;
   toast('', `Sample Background：用 ${fmtTC(c._start + (onClip(c) ? localT(c) : 0))} 這一格當成乾淨背景`); renderInspector();
+  // ask the AI whether a person is still in the "clean" frame — the usual reason the result breaks into dots
+  if (typeof aiGet === 'function' && m && m.user) aiGet('seg').then(() => {
+    const sw = W >= H ? 256 : 144, sh = W >= H ? 144 : 256, t = document.createElement('canvas'); t.width = sw; t.height = sh; t.getContext('2d').drawImage(cv2, 0, 0, sw, sh);
+    const a = aiPersonMask(t, sw, sh); if (!a) return; let on = 0; for (const v of a) if (v > .5) on++;
+    if (on / a.length > .03) { f.refPerson = true; renderInspector(); toast('', '⚠ 這一格參考畫面裡有人，去背會破碎。請換一格沒有人的，或改用 AI 人物去背'); }
+  }).catch(() => { });
 }
 function sceneMask(k, f, lt, filt) {
   const mid = mediaOf(k), m = MEDIA[mid], i = (k.fx || []).indexOf(f);
@@ -4008,13 +4014,69 @@ function sceneMask(k, f, lt, filt) {
   else if (m && !m.user && DRAW[mid]) drawBuiltin(RFX, mid, f.ref ?? 0);
   else { RFX.filter = 'none'; if (!warnedRef) { warnedRef = true; toast('', 'Scene Removal Mask：先在檢查器按 Sample Background，選一格沒有人的畫面'); } return; }
   RFX.filter = 'none';
-  let a, b; try { a = LX.getImageData(0, 0, W, H); b = RFX.getImageData(0, 0, W, H); } catch (e) { return; }
-  const d = a.data, r = b.data, th = 8 + f.amt / 100 * 110, soft = th * .6;
-  for (let p = 0; p < d.length; p += 4) {
-    const dist = Math.abs(d[p] - r[p]) + Math.abs(d[p + 1] - r[p + 1]) + Math.abs(d[p + 2] - r[p + 2]);
-    if (dist < th) d[p + 3] = 0; else if (dist < th + soft) d[p + 3] = d[p + 3] * (dist - th) / soft;
+  // work on a small, slightly blurred copy: camera noise and tiny shifts disappear, and it is fast
+  const sw = W >= H ? 192 : 108, sh = W >= H ? 108 : 192, N = sw * sh;
+  if (smA.width !== sw || smA.height !== sh) { smA.width = smB.width = smM.width = sw; smA.height = smB.height = smM.height = sh; }
+  SMA.filter = SMB.filter = 'blur(1px)'; SMA.clearRect(0, 0, sw, sh); SMB.clearRect(0, 0, sw, sh);
+  SMA.drawImage(layer, 0, 0, sw, sh); SMB.drawImage(refCv, 0, 0, sw, sh); SMA.filter = SMB.filter = 'none';
+  let A, B; try { A = SMA.getImageData(0, 0, sw, sh).data; B = SMB.getImageData(0, 0, sw, sh).data; } catch (e) { return; }
+  // 1) difference from the clean background, with the overall exposure change taken out
+  let la = 0, lb = 0; for (let p = 0; p < A.length; p += 4) { la += A[p] * .3 + A[p + 1] * .59 + A[p + 2] * .11; lb += B[p] * .3 + B[p + 1] * .59 + B[p + 2] * .11; }
+  const gain = clamp(la / Math.max(1, lb), .7, 1.4), th = .05 + (f.amt ?? 30) / 100 * .25, raw = new Float32Array(N);
+  for (let i = 0, p = 0; i < N; i++, p += 4) {
+    const ya = (A[p] * .3 + A[p + 1] * .59 + A[p + 2] * .11) / 255, yb = (B[p] * .3 + B[p + 1] * .59 + B[p + 2] * .11) / 255 * gain;
+    const dc = (Math.abs((A[p] - A[p + 1]) - (B[p] - B[p + 1])) + Math.abs((A[p + 2] - A[p + 1]) - (B[p + 2] - B[p + 1]))) / 510;
+    raw[i] = clamp((Math.max(Math.abs(ya - yb), dc * 1.3) - th) / .08 + .5, 0, 1);
   }
-  LX.putImageData(a, 0, 0);
+  // 2) clean the shape: smooth, close small gaps, drop specks, fill holes inside the person
+  let bm = smMask(boxBlur(raw, sw, sh, 1), .5);
+  bm = morph(morph(bm, sw, sh, 2, true), sw, sh, 2, false);   // close: dilate then erode
+  bm = morph(morph(bm, sw, sh, 1, false), sw, sh, 1, true);   // open: erode then dilate (removes specks)
+  bm = dropSmall(bm, sw, sh, N * .01);
+  bm = fillHoles(bm, sw, sh);
+  let alpha = boxBlur(bm, sw, sh, 1);
+  // 3) the AI person mask, when it is loaded (GitHub site), makes people solid
+  if (typeof AI !== 'undefined' && AI.seg && !G) { const am = aiPersonMask(smA, sw, sh); if (am) for (let i = 0; i < N; i++) alpha[i] = Math.max(alpha[i], am[i]); }
+  // 4) steady over time: blend with the previous frame of the same clip
+  const key = k.uid + ':' + i, prev = smPrev.get(key);
+  if (prev && prev.length === N && !G) for (let j = 0; j < N; j++) alpha[j] = alpha[j] * .65 + prev[j] * .35;
+  if (!G) smPrev.set(key, alpha);
+  const id = SMM.createImageData(sw, sh);
+  for (let j = 0; j < N; j++) { id.data[j * 4] = id.data[j * 4 + 1] = id.data[j * 4 + 2] = 255; id.data[j * 4 + 3] = alpha[j] * 255; }
+  SMM.putImageData(id, 0, 0);
+  LX.save(); LX.setTransform(1, 0, 0, 1, 0, 0); LX.globalCompositeOperation = 'destination-in'; LX.imageSmoothingEnabled = true; LX.drawImage(smM, 0, 0, W, H); LX.restore();
+}
+const smA = document.createElement('canvas'), SMA = smA.getContext('2d', { willReadFrequently: true });
+const smB = document.createElement('canvas'), SMB = smB.getContext('2d', { willReadFrequently: true });
+const smM = document.createElement('canvas'), SMM = smM.getContext('2d'), smPrev = new Map();
+const smMask = (a, t) => { const o = new Uint8Array(a.length); for (let i = 0; i < a.length; i++) o[i] = a[i] >= t ? 1 : 0; return o; };
+function boxBlur(a, w, h, r) {
+  const t = new Float32Array(a.length), o = new Float32Array(a.length);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let s = 0, n = 0; for (let d = -r; d <= r; d++) { const xx = x + d; if (xx >= 0 && xx < w) { s += a[y * w + xx]; n++; } } t[y * w + x] = s / n; }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let s = 0, n = 0; for (let d = -r; d <= r; d++) { const yy = y + d; if (yy >= 0 && yy < h) { s += t[yy * w + x]; n++; } } o[y * w + x] = s / n; }
+  return o;
+}
+function morph(m, w, h, r, grow) { // grow = dilate (any neighbour on), else erode (all neighbours on)
+  const t = new Uint8Array(m.length), o = new Uint8Array(m.length);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let v = grow ? 0 : 1; for (let d = -r; d <= r; d++) { const xx = Math.min(w - 1, Math.max(0, x + d)), q = m[y * w + xx]; if (grow ? q : !q) { v = grow ? 1 : 0; break; } } t[y * w + x] = v; }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let v = grow ? 0 : 1; for (let d = -r; d <= r; d++) { const yy = Math.min(h - 1, Math.max(0, y + d)), q = t[yy * w + x]; if (grow ? q : !q) { v = grow ? 1 : 0; break; } } o[y * w + x] = v; }
+  return o;
+}
+function dropSmall(m, w, h, minArea) { // remove foreground islands smaller than minArea
+  const lab = new Int32Array(m.length), out = new Uint8Array(m.length), st = [];
+  for (let s = 0; s < m.length; s++) {
+    if (!m[s] || lab[s]) continue; const comp = []; st.push(s); lab[s] = 1;
+    while (st.length) { const p = st.pop(); comp.push(p); const x = p % w, y = (p / w) | 0; for (const q of [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, y > 0 ? p - w : -1, y < h - 1 ? p + w : -1]) if (q >= 0 && m[q] && !lab[q]) { lab[q] = 1; st.push(q); } }
+    if (comp.length >= minArea) for (const p of comp) out[p] = 1;
+  }
+  return out;
+}
+function fillHoles(m, w, h) { // background reachable from the frame edge stays background; enclosed gaps become foreground
+  const bg = new Uint8Array(m.length), st = [];
+  const seed = p => { if (!m[p] && !bg[p]) { bg[p] = 1; st.push(p); } };
+  for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); } for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
+  while (st.length) { const p = st.pop(), x = p % w, y = (p / w) | 0; if (x > 0) seed(p - 1); if (x < w - 1) seed(p + 1); if (y > 0) seed(p - w); if (y < h - 1) seed(p + w); }
+  const o = new Uint8Array(m.length); for (let i = 0; i < m.length; i++) o[i] = bg[i] ? 0 : 1; return o;
 }
 const mmSmall = document.createElement('canvas'); mmSmall.width = 240; mmSmall.height = 135; const MMX = mmSmall.getContext('2d', { willReadFrequently: true });
 const mmDef = f => ({ cx: .5, cy: .62, rx: .24, ry: .6, feather: .1, inv: false, ...f });
@@ -4049,12 +4111,14 @@ function drawMaskGuide() {
   ctx.beginPath(); ctx.ellipse(g.cx * W, g.cy * H, g.rx * W, g.ry * H, 0, 0, 7); ctx.stroke(); ctx.restore();
 }
 function fxExtra(f, i) {
-  if (f.type === 'scenemask') return `<div class="prow"><span></span><button class="btn" type="button" data-fxsample="${i}">Sample Background</button><span></span></div><p class="pnote" style="padding:0">${f.ref == null ? '練習素材「訪談」「產品特寫」已經有乾淨背景；你自己的影片要把播放頭移到沒有人的那一格，再按 Sample Background。' : `參考畫面：素材 ${fmtTC(f.ref)}${f.refUser && !refCache.has('') ? '（重新整理後要再按一次）' : ''}`}</p>`;
+  if (f.type === 'scenemask') return `<div class="prow"><span></span><button class="btn" type="button" data-fxsample="${i}">Sample Background</button><span></span></div><p class="pnote" style="padding:0">${f.ref == null ? '練習素材「訪談」「產品特寫」已經有乾淨背景；你自己的影片要把播放頭移到沒有人的那一格，再按 Sample Background。' : `參考畫面：素材 ${fmtTC(f.ref)}${f.refUser && !refCache.has('') ? '（重新整理後要再按一次）' : ''}`}</p>`
+    + (f.refPerson ? `<p class="pnote" style="padding:0;color:#ffb347">⚠ AI 在這一格參考畫面裡看到人。Scene Removal 會把「跟參考畫面一樣」的地方去掉，所以人會變成破碎的點點。請換一格人完全不在畫面裡的，或改用 AI 人物去背（不用乾淨背景）。</p><div class="prow"><span></span><button class="btn" type="button" data-fxswap="${i}">改用 AI 人物去背</button><span></span></div>` : '');
   if (f.type === 'magmask') { const g = mmDef(f); return [['cx', 'Center X', 0, 100, g.cx], ['cy', 'Center Y', 0, 100, g.cy], ['rx', 'Width', 5, 60, g.rx], ['ry', 'Height', 5, 60, g.ry], ['feather', 'Feather', 0, 50, g.feather]].map(([p, n, a, b, v]) => `<div class="prow"><label class="pl" for="fxp-${i}-${p}">${n}</label><div class="pc"><input type="range" id="fxp-${i}-${p}" data-fxp="${i}:${p}" min="${a}" max="${b}" value="${Math.round(v * 100)}"><output>${Math.round(v * 100)}%</output></div><span></span></div>`).join('') + `<div class="prow"><label class="pl" for="fxp-${i}-inv">Invert</label><input type="checkbox" id="fxp-${i}-inv" data-fxinv="${i}" ${g.inv ? 'checked' : ''}><span></span></div><div class="prow"><span></span><button class="btn" type="button" data-fxana="${i}">Analyze 分析</button><span></span></div><p class="pnote" style="padding:0">藍色虛線是遮罩範圍：用 Center、Width、Height 框住人，上面的強度滑桿是「去掉背景色」的程度。FCP 11 是用 AI 自動抓人，練習室是用框的範圍加顏色判斷。</p>`; }
   return '';
 }
 function bindFxExtra(c, el) {
   el.querySelectorAll('[data-fxsample]').forEach(b => { b.onclick = () => sampleBackground(c, +b.dataset.fxsample); });
+  el.querySelectorAll('[data-fxswap]').forEach(b => { b.onclick = () => { const j = +b.dataset.fxswap; edit(() => { c.fx[j] = { type: 'aiseg', amt: 30 }; sel = c.uid; }); toast('', '改用 AI 人物去背：AI 會自動找出人，不需要乾淨的背景'); }; });
   el.querySelectorAll('[data-fxp]').forEach(inp => {
     const [i, p] = inp.dataset.fxp.split(':'); let once = false;
     inp.onpointerdown = () => { insDown = true; if (!once) { commit(); once = true; } };
@@ -4238,8 +4302,17 @@ const AI_MODELS = {
   face: AI_M + 'face_landmarker/face_landmarker/float16/1/face_landmarker.task',
 };
 const AI = { state: {}, p: {} };
+// the engine and the person-cutout model ship next to the page (folder mp/), so they also work where outside
+// downloads are blocked (claude.ai); otherwise they come from the CDN
+const AI_LOCAL = './mp';
 async function aiInit() {
-  if (!AI.vp) AI.vp = (async () => { AI.mod = await import(AI_BASE + '/vision_bundle.mjs'); return AI.mod.FilesetResolver.forVisionTasks(AI_BASE + '/wasm'); })();
+  if (!AI.vp) AI.vp = (async () => {
+    for (const base of [AI_LOCAL, AI_BASE]) {
+      try { const mod = await import(base + '/vision_bundle.mjs'); const v = await mod.FilesetResolver.forVisionTasks(new URL(base + '/wasm', location.href).href); AI.mod = mod; AI.base = base; return v; } catch (e) { }
+    }
+    throw new Error('AI 元件載入失敗');
+  })();
+  AI.vp.catch(() => { AI.vp = null; });
   return AI.vp;
 }
 function aiGet(kind) {
@@ -4248,15 +4321,19 @@ function aiGet(kind) {
   AI.state[kind] = 'loading';
   AI.p[kind] = (async () => {
     const v = await aiInit(), M = AI.mod;
-    const make = delegate => {
-      const o = { baseOptions: { modelAssetPath: AI_MODELS[kind], delegate }, runningMode: 'IMAGE' };
+    const make = (delegate, path) => {
+      const o = { baseOptions: { modelAssetPath: path || AI_MODELS[kind], delegate }, runningMode: 'IMAGE' };
       if (kind === 'cls') return M.ImageClassifier.createFromOptions(v, { ...o, maxResults: 5 });
       if (kind === 'det') return M.ObjectDetector.createFromOptions(v, { ...o, maxResults: 6, scoreThreshold: .35 });
       if (kind === 'seg') return M.ImageSegmenter.createFromOptions(v, { ...o, outputConfidenceMasks: true, outputCategoryMask: false });
       return M.FaceLandmarker.createFromOptions(v, { ...o, numFaces: 3, outputFaceBlendshapes: true });
     };
     // the small int8 classifier / detector only work on the CPU path (on the GPU they load but return nothing)
-    let t; try { t = await make(kind === 'face' ? 'GPU' : 'CPU'); } catch (e) { t = await make('CPU'); }
+    let t;
+    if (kind === 'seg') { // person cutout: the copy next to the page first
+      for (const p of [new URL(AI_LOCAL + '/selfie_segmenter.tflite', location.href).href, AI_MODELS.seg]) { try { t = await make('CPU', p); break; } catch (e) { } }
+      if (!t) throw new Error('AI 人物去背模型載入失敗');
+    } else { try { t = await make(kind === 'face' ? 'GPU' : 'CPU'); } catch (e) { t = await make('CPU'); } }
     AI[kind] = t; AI.state[kind] = 'ready'; return t;
   })();
   AI.p[kind].catch(() => { AI.state[kind] = 'failed'; AI.p[kind] = null; });
@@ -4279,13 +4356,21 @@ function aiSegLayer(f) {
   const sw = W >= H ? 256 : 144, sh = W >= H ? 144 : 256;
   if (segCv.width !== sw || segCv.height !== sh) { segCv.width = mskCv.width = sw; segCv.height = mskCv.height = sh; }
   SGX.clearRect(0, 0, sw, sh); SGX.drawImage(layer, 0, 0, sw, sh);
-  let r; try { r = s.segment(segCv); } catch (e) { return; }
-  const m = r && r.confidenceMasks && r.confidenceMasks[r.confidenceMasks.length - 1]; if (!m) return;
-  const a = m.getAsFloat32Array(), id = MKX.createImageData(sw, sh), soft = .05 + (f.amt / 100) * .35, lo = .5 - soft, hi = .5 + soft;
-  for (let i = 0; i < a.length; i++) { const v = clamp((a[i] - lo) / (hi - lo), 0, 1); id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = 255; id.data[i * 4 + 3] = v * 255; }
-  try { r.close && r.close(); } catch (e) { }
+  const a = aiPersonMask(segCv, sw, sh); if (!a) return;
+  // keep only real body parts: pieces smaller than 2% of the frame (bits of furniture the AI half-believes) are dropped
+  const keep = morph(dropSmall(smMask(a, .5), sw, sh, a.length * .02), sw, sh, 2, true);
+  const id = MKX.createImageData(sw, sh), soft = .05 + (f.amt / 100) * .35, lo = .5 - soft, hi = .5 + soft;
+  for (let i = 0; i < a.length; i++) { const v = keep[i] ? clamp((a[i] - lo) / (hi - lo), 0, 1) : 0; id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = 255; id.data[i * 4 + 3] = v * 255; }
   MKX.putImageData(id, 0, 0);
   LX.save(); LX.setTransform(1, 0, 0, 1, 0, 0); LX.globalCompositeOperation = 'destination-in'; LX.imageSmoothingEnabled = true; LX.drawImage(mskCv, 0, 0, W, H); LX.restore();
+}
+// how sure the AI is, per pixel, that it shows a person (same size as the canvas given); null when unavailable
+function aiPersonMask(src, sw, sh) {
+  const s = AI.seg; if (!s) return null;
+  let r; try { r = s.segment(src); } catch (e) { return null; }
+  const m = r && r.confidenceMasks && r.confidenceMasks[r.confidenceMasks.length - 1]; if (!m) return null;
+  const a = Float32Array.from(m.getAsFloat32Array()); try { r.close && r.close(); } catch (e) { }
+  return a.length === sw * sh ? a : null;
 }
 FX.aiseg = { name: 'AI 人物去背', desc: '不用綠幕，AI 自動找出人物、把背景去掉（第一次要下載模型）', min: 0, max: 100, def: 30 };
 FXCAT.aiseg = 'Keying'; FXEN.aiseg = 'AI Person Cutout';
@@ -4792,6 +4877,7 @@ ${ceMusicText()}
 - 效果要有理由才加：kenburns（慢慢推近，用在安靜的畫面）、slowmo（動作精彩的瞬間）。不確定就用 none。
 - 縮圖表只看得到四格，in/out 要在素材長度內，避開開頭和結尾不穩的地方。
 - 綠幕素材（背景全綠）不要放主線，要放在 overlays 用 type "green" 合成到別的畫面上。
+- 想把某段素材裡的人「摳出來」放到另一個畫面上（不用綠幕），用 overlays type "cutout"（AI 人物去背），整支最多一次，要有理由。
 
 只回傳一個 JSON 物件，不要其他文字，格式：
 {"summary":"一兩句說明你的剪輯想法",
@@ -4800,7 +4886,7 @@ ${ceMusicText()}
  "music":"music3",
  "shots":[{"clip":"C2","in":1.5,"out":3.8,"transition":"cut","effect":"none","caption":null,"why":"為什麼放這裡"},
           {"clip":"C1","in":0.5,"out":2.4,"transition":"dissolve","effect":"kenburns","caption":{"text":"早安 ☀️","style":"soft"},"why":"..."}],
- "overlays":[{"clip":"C5","in":0,"out":3,"atShot":2,"type":"green","position":"right"}]}
+ "overlays":[{"clip":"C5","in":0,"out":3,"atShot":2,"type":"green|cutout|pip","position":"left|right|center"}]}
 caption.style 可選：soft（小小的兩行字，可用 \\n 換行，適合生活 vlog）、pop（綜藝跳字）、cine（電影感標題）、lower（下方說明條）。transition 可選：${CE_TRANS.join('、')}。effect 可選：none、kenburns、slowmo。`;
 }
 function ceAddMusic(mid, total, phase) {
@@ -4860,6 +4946,7 @@ async function ceApply(plan, map, o) {
         const dur = MEDIA[id].dur, a = clamp(+ov.in || 0, 0, Math.max(0, dur - .5)), b = clamp(+ov.out || a + 3, a + .5, dur), g = mk(id, a, b);
         g.anchor = host.uid; g.offset = 0; g.vol = -96; const side = ov.position === 'left' ? -1 : ov.position === 'center' ? 0 : 1;
         if (ov.type === 'green') { g.fx = [{ type: 'key', amt: FX.key ? FX.key.def ?? 30 : 30, color: '#00ff00' }]; g.scale = +((o.fill ? fillOf(id) : 1) * .75).toFixed(3); g.x = Math.round(side * W * .2); g.y = Math.round(H * .12); }
+        else if (ov.type === 'cutout') { g.fx = [{ type: 'aiseg', amt: 30 }]; g.scale = +((o.fill ? fillOf(id) : 1) * .6).toFixed(3); g.x = Math.round((side || 1) * W * (H > W ? .2 : .25)); g.y = Math.round(H * .2); }
         else { g.scale = .38; g.x = Math.round(side * W * .28); g.y = -Math.round(H * .28); }
         S.connected.push(g); overs++;
       }

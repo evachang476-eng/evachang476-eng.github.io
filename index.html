@@ -763,7 +763,7 @@ svg.i { width: 16px; height: 16px; display: block; fill: none; stroke: currentCo
 (() => {
 const $ = s => document.querySelector(s);
 const isMac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent);
-const FPS = 30, W = 960, H = 540;
+const FPS = 30; let W = 960, H = 540; // H > W when the project is vertical (9:16)
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const winKey = k => k.replace(/⌘/g, 'Ctrl+').replace(/⌥/g, 'Alt+').replace(/⇧/g, 'Shift+').replace(/⌃/g, 'Ctrl+');
@@ -956,6 +956,28 @@ const DRAW = {
     c.beginPath(); c.arc(cx - 16, hy - 2, 4, 0, 7); c.arc(cx + 16, hy - 2, 4, 0, 7); c.fill();
     c.strokeStyle = '#8a3b3b'; c.lineWidth = 4; c.beginPath(); c.arc(cx, hy + 22, 14, .2, Math.PI - .2); c.stroke();
   },
+  vframe(c, t, w, h) {
+    // a vertical template for podcast / knowledge Reels: room for a headline on top, a video window in the
+    // middle and a show name at the bottom
+    const g = c.createLinearGradient(0, 0, w, h); g.addColorStop(0, '#1f3b73'); g.addColorStop(1, '#2bb3a3'); c.fillStyle = g; c.fillRect(0, 0, w, h);
+    const r = seeded(31); c.lineWidth = 3; c.lineCap = 'round';
+    for (let i = 0; i < 18; i++) {
+      const x = r() * w, y = r() * h, s = 10 + r() * 22, k = i % 3, bob = Math.sin(t * 1.2 + i) * 6;
+      c.strokeStyle = `rgba(255,255,255,${.18 + r() * .2})`; c.beginPath();
+      if (k === 0) c.arc(x, y + bob, s, 0, 7);
+      else if (k === 1) { c.moveTo(x - s, y + bob); c.lineTo(x + s, y + bob); c.moveTo(x, y - s + bob); c.lineTo(x, y + s + bob); }
+      else { for (let j = 0; j <= 12; j++) { const xx = x - s * 1.5 + j * s / 4, yy = y + bob + Math.sin(j * 1.2 + t) * s / 3; j ? c.lineTo(xx, yy) : c.moveTo(xx, yy); } }
+      c.stroke();
+    }
+    const wx = w * .05, wy = h * .22, ww = w * .9, wh = h * .52;
+    c.fillStyle = 'rgba(0,0,0,.35)'; rr(c, wx, wy, ww, wh, 24); c.fill();
+    c.strokeStyle = 'rgba(255,255,255,.85)'; c.lineWidth = 4; rr(c, wx, wy, ww, wh, 24); c.stroke();
+    c.fillStyle = 'rgba(255,255,255,.35)'; c.font = `600 ${w * .045}px "Noto Sans TC", sans-serif`; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText('把訪談連接到這個框裡', w / 2, wy + wh / 2);
+    c.fillStyle = 'rgba(255,255,255,.22)'; c.fillText('（標題放上面、字幕放框的下緣）', w / 2, wy + wh / 2 + w * .07);
+    c.fillStyle = '#ffd24a'; rr(c, w * .27, h * .83, w * .46, h * .07, h * .035); c.fill();
+    c.fillStyle = '#1f3b73'; c.font = `800 ${w * .055}px "Noto Sans TC", sans-serif`; c.fillText('🎙 我的 Podcast', w / 2, h * .865);
+  },
   countdown(c, t, w, h) {
     c.fillStyle = '#7d7d7d'; c.fillRect(0, 0, w, h);
     const n = Math.max(1, 5 - Math.floor(t)), ph = t % 1;
@@ -988,6 +1010,7 @@ const MEDIA = {
   talk2: { name: '訪談・側面機位', type: 'video', dur: 15 },
   green: { name: '綠幕人物（練去背）', type: 'video', dur: 10 },
   countdown: { name: '倒數片頭', type: 'video', dur: 5 },
+  vframe: { name: '直式背景框（Podcast 短影音）', type: 'video', dur: 30, vertical: true },
   music2: { name: '輕快節奏', type: 'audio', dur: 30, notes: [392, 440, 523.25, 587.33, 523.25, 440, 392, 329.63], bps: 6, wave: 'square', decay: 4 },
   music3: { name: '抒情鋼琴', type: 'audio', dur: 40, notes: [261.63, 329.63, 392, 493.88, 440, 349.23, 329.63, 293.66], bps: 2, wave: 'sine', decay: 1.2 },
 };
@@ -997,7 +1020,10 @@ const THUMB = {}, STRIP = {};
   const cv = document.createElement('canvas'); cv.width = 192; cv.height = 108; const c = cv.getContext('2d');
   for (const id of ORDER) {
     c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, 192, 108); c.scale(192 / W, 108 / H);
-    if (MEDIA[id].type === 'audio') drawAudioViz(c, 1.3, MEDIA[id].name); else DRAW[id](c, ({ countdown: 1.2, fireworks: 2.1 })[id] ?? MEDIA[id].dur * .3, W, H);
+    const tt = ({ countdown: 1.2, fireworks: 2.1, vframe: 1 })[id] ?? MEDIA[id].dur * .3;
+    if (MEDIA[id].type === 'audio') drawAudioViz(c, 1.3, MEDIA[id].name);
+    else if (MEDIA[id].vertical) { const v = document.createElement('canvas'); v.width = 540; v.height = 960; DRAW[id](v.getContext('2d'), tt, 540, 960); c.fillStyle = '#000'; c.fillRect(0, 0, W, H); c.drawImage(v, (W - 540 * H / 960) / 2, 0, 540 * H / 960, H); }
+    else DRAW[id](c, tt, W, H);
     THUMB[id] = cv.toDataURL('image/jpeg', .8);
   }
   const wv = document.createElement('canvas'); wv.width = 240; wv.height = 40; const w = wv.getContext('2d');
@@ -1279,12 +1305,33 @@ function updateAudio() {
 /* ---------- viewer ---------- */
 const cv = $('#cv'), ctx = cv.getContext('2d');
 function drawFit(c, el, w, h) { if (!w || !h) return; const r = Math.min(W / w, H / h), dw = w * r, dh = h * r; c.drawImage(el, (W - dw) / 2, (H - dh) / 2, dw, dh); }
+/* built-in footage is drawn at its own shape (landscape, or portrait for 「直式背景框」); in a project of the
+   other shape it is fitted with black bars, like real footage in FCP */
+const nativeCv = {};
+function drawBuiltin(c, id, t, plate) {
+  const nv = !!MEDIA[id].vertical;
+  if (nv === H > W) return DRAW[id](c, t, W, H, plate);
+  const nw = nv ? 540 : 960, nh = nv ? 960 : 540, key = nw + 'x' + nh;
+  if (!nativeCv[key]) { const o = document.createElement('canvas'); o.width = nw; o.height = nh; nativeCv[key] = o; }
+  const o = nativeCv[key], ox = o.getContext('2d'); ox.setTransform(1, 0, 0, 1, 0, 0); ox.clearRect(0, 0, nw, nh);
+  DRAW[id](ox, t, nw, nh, plate); drawFit(c, o, nw, nh);
+}
+/* switch the project between 16:9 (1920×1080) and 9:16 (1080×1920) */
+function setAspect(vertical, quiet) {
+  if ((H > W) === !!vertical) return;
+  [W, H] = vertical ? [540, 960] : [960, 540];
+  for (const x of [cv, layer, gCv, refCv]) { x.width = W; x.height = H; }
+  halfCv.width = W / 2; halfCv.height = H / 2;
+  if (vZoom !== 'fit') setVZoom(vZoom);
+  fullRender();
+  if (!quiet) { toast('', vertical ? '專案改成直式 9:16（1080 × 1920），適合 Reels、Shorts、TikTok' : '專案改回橫式 16:9（1920 × 1080）'); if (vertical) mark('vertical'); }
+}
 function drawSource(c, id, t) {
   const m = MEDIA[id]; if (!m) return;
   if (m.compound) return drawCompound(c, m, t);
   if (m.mc) { if (MEDIA[m.angles[0]]) drawSource(c, m.angles[0], t); return; }
   if (proxyView && META.proxy[id] && !inProxy) return drawProxy(c, id, t);
-  if (!m.user) { if (m.type === 'audio') drawAudioViz(c, t, m.name); else DRAW[id](c, t, W, H); return; }
+  if (!m.user) { if (m.type === 'audio') drawAudioViz(c, t, m.name); else drawBuiltin(c, id, t); return; }
   if (!m.ready) { c.fillStyle = 'rgba(255,255,255,.6)'; c.font = '600 26px "Noto Sans TC", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('載入中…', W / 2, H / 2); return; }
   if (m.type === 'audio') { drawAudioViz(c, t, m.name); return; }
   if (m.img) return drawFit(c, m.el, m.w, m.h);
@@ -1872,7 +1919,7 @@ function gradeImage(d, P) {
 const halfCv = document.createElement('canvas'); halfCv.width = 480; halfCv.height = 270; const HX = halfCv.getContext('2d', { willReadFrequently: true });
 function gradeLayer(P) {
   try {
-    if (rate) { HX.clearRect(0, 0, 480, 270); HX.drawImage(layer, 0, 0, 480, 270); const im = HX.getImageData(0, 0, 480, 270); gradeImage(im.data, P); HX.putImageData(im, 0, 0); LX.clearRect(0, 0, W, H); LX.drawImage(halfCv, 0, 0, W, H); }
+    if (rate) { const hw = halfCv.width, hh = halfCv.height; HX.clearRect(0, 0, hw, hh); HX.drawImage(layer, 0, 0, hw, hh); const im = HX.getImageData(0, 0, hw, hh); gradeImage(im.data, P); HX.putImageData(im, 0, 0); LX.clearRect(0, 0, W, H); LX.drawImage(halfCv, 0, 0, W, H); }
     else { const im = LX.getImageData(0, 0, W, H); gradeImage(im.data, P); LX.putImageData(im, 0, 0); }
   } catch (e) { }
 }
@@ -2023,9 +2070,11 @@ function renderInspector() {
   if (!c) {
     layout();
     el.innerHTML = `<div class="ihead"><b>我的專案</b><span>${fmtShort(projEnd())}</span></div>`
-      + psec('pinfo', 'Project Properties', pstat('Format', '1080p HD') + pstat('Resolution', '1920 × 1080') + pstat('Rate', '30p') + pstat('Audio', 'Stereo, 48kHz') + pstat('Library', '練習資料庫')
+      + psec('pinfo', 'Project Properties', pstat('Format', H > W ? 'Vertical 1080 × 1920' : '1080p HD') + pstat('Resolution', H > W ? '1080 × 1920（9:16 直式）' : '1920 × 1080（16:9 橫式）') + pstat('Rate', '30p') + pstat('Audio', 'Stereo, 48kHz') + pstat('Library', '練習資料庫')
         + pstat('Primary', `${S.primary.filter(k => kind(k) !== 'gap').length} clips`) + pstat('Connected', `${S.connected.length} clips`))
-      + pnote(`點時間線上的片段，檢查器會出現 Video、Color、Audio、Info 分頁，跟 Final Cut Pro 一樣。FCP 用 ${kbd('⌘4')} 開關檢查器。`);
+      + `<div class="prow" style="padding:6px 12px"><button class="btn" type="button" id="bt-aspect">${H > W ? '改回橫式 16:9' : '改成直式 9:16（Reels／Shorts）'}</button></div>`
+      + pnote(`點時間線上的片段，檢查器會出現 Video、Color、Audio、Info 分頁，跟 Final Cut Pro 一樣。FCP 用 ${kbd('⌘4')} 開關檢查器。在 FCP 改格式：選專案按 ${kbd('⌘J')}，再按 Modify。`);
+    $('#bt-aspect').onclick = () => setAspect(!(H > W));
     return;
   }
   const k = kind(c), lt = localT(c);
@@ -2388,6 +2437,7 @@ function opExport() {
       $('#ex-prog i').style.width = '100%';
       msg.innerHTML = `輸出完成：<b>${esc(file)}</b>（${(blob.size / 1048576).toFixed(1)} MB），已開始下載。沒看到檔案的話 <a href="${url}" download="${esc(file)}">按這裡再下載一次</a>。`;
       go.disabled = false; go.textContent = '完成'; go.dataset.done = '1'; mark('export');
+      if (H > W && S.primary.some(k => k.media === 'vframe') && S.connected.some(k => k.media === 'talk' || k.media === 'talk2') && S.connected.some(k => k.media === 'title') && S.connected.length >= 4) mark('reels');
     } catch (e) {
       msg.textContent = '輸出失敗：' + (e && e.message ? e.message : e) + '。可以換一個格式再試一次。';
       go.disabled = false; $('#ex-fmt').disabled = $('#ex-q').disabled = $('#ex-name').disabled = false;
@@ -2695,7 +2745,7 @@ function idbOpen() { return new Promise((res, rej) => { try { const r = indexedD
 function idbDo(mode, fn) { return new Promise((res, rej) => { const t = db.transaction('media', mode); const req = fn(t.objectStore('media')); t.oncomplete = () => res(req ? req.result : undefined); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); }); }
 async function saveMediaRec(rec) { if (!db) return; try { await idbDo('readwrite', st => st.put(rec)); } catch (e) { toast('', `「${rec.name}」太大或瀏覽器空間不足，重新整理後會不見`); } }
 async function deleteMediaRec(id) { if (!db) return; try { await idbDo('readwrite', st => st.delete(id)); } catch (e) { } }
-const projectData = () => ({ S, ranges, playhead, src: src.media, pps, sel });
+const projectData = () => ({ S, ranges, playhead, src: src.media, pps, sel, vertical: H > W });
 let lastHist = '';
 function saveHistory() {
   // keep ⌘Z / ⇧⌘Z working after a refresh; trim the oldest steps if the browser runs out of room
@@ -2723,6 +2773,7 @@ async function restore() {
     Object.assign(ranges, p.ranges || {}); playhead = +p.playhead || 0;
     if (p.src && MEDIA[p.src]) src.media = p.src;
     if (+p.pps > 0) pps = +p.pps;
+    if (p.vertical) setAspect(true, true);
     if (p.sel != null && findClip(p.sel)) sel = p.sel;
     try {
       const h = JSON.parse(localStorage.getItem('fcp-practice-history') || 'null');
@@ -3201,9 +3252,9 @@ function drawScope() {
   SX.globalCompositeOperation = 'source-over';
 }
 function updateFmt() {
-  let t = '1080p HD 30p, Stereo';
+  let t = H > W ? 'Vertical 1080 × 1920 30p, Stereo' : '1080p HD 30p, Stereo';
   const id = hover && !rate ? hover.media : (focus === 'browser' && skimT == null ? src.media : null);
-  if (id && MEDIA[id]) { const m = MEDIA[id]; t = m.type === 'audio' ? 'Audio, Stereo' : m.user ? (m.w ? `${m.w} × ${m.h}` : '') + (m.img ? ', Still' : '') : '1080p HD 30p, Stereo'; }
+  if (id && MEDIA[id]) { const m = MEDIA[id]; t = m.type === 'audio' ? 'Audio, Stereo' : m.user ? (m.w ? `${m.w} × ${m.h}` : '') + (m.img ? ', Still' : '') : m.vertical ? '1080 × 1920 30p' : '1080p HD 30p, Stereo'; }
   if (t !== lastFmt) { $('#v-fmt').textContent = t; lastFmt = t; }
 }
 function stageRect() { const cr = cv.getBoundingClientRect(), sr = $('#vstage').getBoundingClientRect(), s = Math.min(cr.width / W, cr.height / H); return { s, left: cr.left - sr.left + $('#vstage').scrollLeft + (cr.width - W * s) / 2, top: cr.top - sr.top + $('#vstage').scrollTop + (cr.height - H * s) / 2 }; }
@@ -3223,7 +3274,7 @@ function drawOverlays() {
 }
 function setVZoom(z) {
   vZoom = z; const st = $('#vstage'); st.classList.toggle('zoomed', z !== 'fit');
-  cv.style.width = z === 'fit' ? '' : (1920 * z) + 'px'; cv.style.height = z === 'fit' ? '' : (1080 * z) + 'px';
+  cv.style.width = z === 'fit' ? '' : (W * 2 * z) + 'px'; cv.style.height = z === 'fit' ? '' : (H * 2 * z) + 'px';
   $('#v-zoom').firstChild.textContent = (z === 'fit' ? 'Fit' : (z * 100) + '%') + ' ';
 }
 const toggleSafe = () => { safeOn = !safeOn; toast('', safeOn ? 'Title/Action Safe Zones：外框是動作安全區，內框是字幕安全區，字幕要放在內框裡' : '關閉安全框'); };
@@ -3923,9 +3974,9 @@ function sampleBackground(c, i) {
 function sceneMask(k, f, lt, filt) {
   const mid = mediaOf(k), m = MEDIA[mid], i = (k.fx || []).indexOf(f);
   RFX.setTransform(1, 0, 0, 1, 0, 0); RFX.globalAlpha = 1; RFX.clearRect(0, 0, W, H); RFX.filter = filt || 'none';
-  if (f.ref == null && PLATE_OK[mid]) DRAW[mid](RFX, srcAt(k, lt), W, H, true);
+  if (f.ref == null && PLATE_OK[mid]) drawBuiltin(RFX, mid, srcAt(k, lt), true);
   else if (refCache.has(k.uid + ':' + i)) RFX.drawImage(refCache.get(k.uid + ':' + i), 0, 0);
-  else if (m && !m.user && DRAW[mid]) DRAW[mid](RFX, f.ref ?? 0, W, H);
+  else if (m && !m.user && DRAW[mid]) drawBuiltin(RFX, mid, f.ref ?? 0);
   else { RFX.filter = 'none'; if (!warnedRef) { warnedRef = true; toast('', 'Scene Removal Mask：先在檢查器按 Sample Background，選一格沒有人的畫面'); } return; }
   RFX.filter = 'none';
   let a, b; try { a = LX.getImageData(0, 0, W, H); b = RFX.getImageData(0, 0, W, H); } catch (e) { return; }
@@ -4123,6 +4174,9 @@ const COURSE = [
   { n: '第 14 課', t: '輸出', goal: '做出可以上傳的影片檔。',
     steps: [['⌘E', 'File › Share › Master File'], ['', 'Settings 分頁：Format 選 Video and Audio，Video codec 選 H.264（檔案小、哪裡都能播）'], ['', 'Resolution 選 1920×1080，按 Next 選存檔位置'], ['⌘9', '背景工作視窗，看輸出進度'], ['', '要上傳 YouTube、IG 可以直接選 Share 裡的預設，或用 Compressor 精準控制大小']],
     here: '這裡按 ⌘E 會真的輸出 1080p 的 MP4，可以直接上傳。', mission: 'export' },
+  { n: '第 15 課', t: '實戰：直式知識短影音（Podcast Reels）', goal: 'IG Reels、YouTube Shorts 常見的版型：上面固定一行吸睛標題、中間是主持人說話的畫面、旁邊會跳出去背的人物或圖片、下面一句一句的大字幕，外面套一個品牌背景框。',
+    steps: [['⌘N', '新增專案，Video Format 選 Vertical，解析度 1080 × 1920（已經開好的專案：選專案按 ⌘J → Modify）'], ['E', '主故事線放背景框（品牌底圖），拉到跟整支影片一樣長'], ['Q', '把主持人說話的片段連接在背景框上面'], ['⇧T', '在檢視器打開 Transform，把主持人縮小、移到中間的框裡；也可以用 Crop 裁成方形'], ['⌘B / Delete', '把講話中「呃」「那個」和停頓切掉（Jump Cut），節奏要快'], ['⌃T', '加一個標題連接在最上層，拉到整支影片一樣長，放在畫面上方當固定標題；重點字改顏色'], ['Q', '在主持人上面再連接一段去背人物或圖片，加 Keyer 或 Scene Removal Mask，縮小放到旁邊，幾秒後消失'], ['Q', '要解釋東西的時候，連接一段 B-roll 蓋過主持人，只蓋住中間的框（縮放到跟框一樣大）'], ['Edit › Captions', '產生字幕，或一句一句加標題；字要大、白字加黑邊（Stroke），放在框的下緣'], ['⌘E', '輸出 1080 × 1920，上傳 Reels／Shorts']],
+    here: '專案檢查器（不選片段時的右邊）按「改成直式 9:16」→ 主故事線放「直式背景框」→ 用 Q 連接「訪談」，在檢查器把 Scale 調到 85%、Position Y 往上一點對準框 → 連接「綠幕人物」加 Keyer、縮小放在旁邊 → 連接「咖啡特寫」當 B-roll → ⌥Y 加標題放最上面 → 輸出。', mission: 'reels' },
 ];
 function fullCourse() {
   const kk = s => s ? (/[⌘⌥⌃⇧]/.test(s) || /^[A-Z]( \/ [A-Z])*$/.test(s) || s.length <= 7 ? kbd(s) : `<b>${esc(s)}</b>`) : '';
@@ -4130,7 +4184,7 @@ function fullCourse() {
     + COURSE.map(L => `<div class="ep"><h4><span>${L.n}</span>${esc(L.t)}${L.mission && done.has(L.mission) ? '　<span class="tag">✓ 已練過</span>' : ''}</h4><p>${esc(L.goal)}</p><ol class="steps">${L.steps.map(([k, d]) => `<li>${k ? kk(k) + '　' : ''}${esc(d)}</li>`).join('')}</ol><div class="tag">在練習室</div><ul><li>${esc(L.here)}</li></ul></div>`).join('')
     + `<div class="dlg-act"><button class="btn primary" data-close type="button">開始練習</button></div>`);
 }
-MENUS.Help.splice(0, 0, ['FCP 完整教學（一步一步）', '14 課，從開專案到輸出', '', fullCourse]);
+MENUS.Help.splice(0, 0, ['FCP 完整教學（一步一步）', '15 課，從開專案到直式短影音', '', fullCourse]);
 MISSIONS.push(
   { id: 'greenkey', adv: 1, t: () => `<b>第 7 課 綠幕去背</b>　主要故事線放「城市夜景」，用 ${kbd('Q')} 把「綠幕人物」連接在上方，打開「效果」把 Keyer 拖到綠幕人物上` },
   { id: 'audition', adv: 1, t: () => `<b>第 13 課 試演</b>　選時間線上的片段，在瀏覽器選另一段素材按 ${kbd('⇧Y')} 加成候選，再按 ${kbd('Y')} 打開比較` },
@@ -4138,6 +4192,8 @@ MISSIONS.push(
   { id: 'precision', adv: 1, t: () => `<b>第 5 課 精確編輯器</b>　雙擊兩段片段之間的剪接點，打開 Precision Editor 調整` },
   { id: 'caption', adv: 1, t: () => `<b>第 8 課 字幕</b>　Edit › Captions › Transcribe to Captions，幫訪談自動產生字幕` },
   { id: 'roles', adv: 1, t: () => `<b>第 9 課 Roles</b>　打開時間線索引（左上角 Index）的 Roles，關掉 Music 聽聽看` },
+  { id: 'vertical', adv: 1, t: () => `<b>第 15 課 直式專案</b>　不選任何片段，在右邊專案檢查器按「改成直式 9:16」` },
+  { id: 'reels', adv: 1, t: () => `<b>第 15 課 Podcast 短影音</b>　直式專案裡：主故事線放「直式背景框」，上面連接「訪談」、一段去背人物、一段 B-roll 和一個標題，然後 ${kbd('⌘E')} 輸出` },
 );
 renderMissions();
 applyPlugins(); makeFxThumbs(); makeTitleThumbs(); buildFxLists(); buildCards(); renderMissions(); focusPanel('browser'); fullRender(); updatePlayBtn();

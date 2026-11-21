@@ -1462,13 +1462,15 @@ function drawClip(k, T, alpha, tf) {
   const paint = c2 => { if (kind(k) === 'title') drawTitle(c2, k, lt); else { const mid = mediaOf(k); if (MEDIA[mid]) paintSrc(c2, k, mid, lt); } };
   const rgbs = fxOf(k, 'rgbsplit'), gl = fxOf(k, 'glitch'), smf = fxOf(k, 'scenemask'), mmf = fxOf(k, 'magmask');
   const pix = fxOf(k, 'pixel'), key = fxOf(k, 'key'), ccP = (k.cc && k.cc.length) || k.bal ? compileCC(k.cc || [], k.bal) : null, grade = ccP && ccP.any;
+  const aiseg = fxOf(k, 'aiseg');
   let img = null;
-  if (pix || key || grade || rgbs || gl || smf || mmf) {
+  if (pix || key || grade || rgbs || gl || smf || mmf || aiseg) {
     LX.setTransform(1, 0, 0, 1, 0, 0); LX.globalAlpha = 1; LX.shadowBlur = 0; LX.clearRect(0, 0, W, H);
     LX.filter = filt || 'none'; paint(LX); LX.filter = 'none'; LX.globalAlpha = 1; LX.shadowBlur = 0;
     if (grade) gradeLayer(ccP);
     if (pix) { const b = Math.max(2, pix.amt), tw = Math.ceil(W / b), th = Math.ceil(H / b); tiny.width = tw; tiny.height = th; TX.drawImage(layer, 0, 0, tw, th); LX.clearRect(0, 0, W, H); LX.imageSmoothingEnabled = false; LX.drawImage(tiny, 0, 0, tw, th, 0, 0, W, H); LX.imageSmoothingEnabled = true; }
     if (key) chromaKey(key);
+    if (aiseg) aiSegLayer(aiseg);
     if (rgbs) rgbSplit(rgbs.amt);
     if (gl) glitchFx(gl.amt, lt);
     if (smf) sceneMask(k, smf, lt, filt);
@@ -4215,6 +4217,130 @@ MISSIONS.push(
 );
 
 /* =====================================================================
+   本機 AI（Google MediaPipe）：在你的瀏覽器裡辨識畫面，素材不會上傳。
+   影像分類（場景／物品）、物件偵測（人、動物、物品在哪裡）、
+   人物去背（不用綠幕）、臉部表情（有沒有在笑）。模型第一次用到才下載。
+   ===================================================================== */
+const AI_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14', AI_M = 'https://storage.googleapis.com/mediapipe-models/';
+const AI_MODELS = {
+  cls: AI_M + 'image_classifier/efficientnet_lite0/int8/1/efficientnet_lite0.tflite',
+  det: AI_M + 'object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite',
+  seg: AI_M + 'image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite',
+  face: AI_M + 'face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+};
+const AI = { state: {}, p: {} };
+async function aiInit() {
+  if (!AI.vp) AI.vp = (async () => { AI.mod = await import(AI_BASE + '/vision_bundle.mjs'); return AI.mod.FilesetResolver.forVisionTasks(AI_BASE + '/wasm'); })();
+  return AI.vp;
+}
+function aiGet(kind) {
+  if (AI[kind]) return Promise.resolve(AI[kind]);
+  if (AI.p[kind]) return AI.p[kind];
+  AI.state[kind] = 'loading';
+  AI.p[kind] = (async () => {
+    const v = await aiInit(), M = AI.mod;
+    const make = delegate => {
+      const o = { baseOptions: { modelAssetPath: AI_MODELS[kind], delegate }, runningMode: 'IMAGE' };
+      if (kind === 'cls') return M.ImageClassifier.createFromOptions(v, { ...o, maxResults: 5 });
+      if (kind === 'det') return M.ObjectDetector.createFromOptions(v, { ...o, maxResults: 6, scoreThreshold: .35 });
+      if (kind === 'seg') return M.ImageSegmenter.createFromOptions(v, { ...o, outputConfidenceMasks: true, outputCategoryMask: false });
+      return M.FaceLandmarker.createFromOptions(v, { ...o, numFaces: 3, outputFaceBlendshapes: true });
+    };
+    // the small int8 classifier / detector only work on the CPU path (on the GPU they load but return nothing)
+    let t; try { t = await make(kind === 'face' ? 'GPU' : 'CPU'); } catch (e) { t = await make('CPU'); }
+    AI[kind] = t; AI.state[kind] = 'ready'; return t;
+  })();
+  AI.p[kind].catch(() => { AI.state[kind] = 'failed'; AI.p[kind] = null; });
+  return AI.p[kind];
+}
+const aiAll = () => Promise.all(['cls', 'det', 'seg', 'face'].map(aiGet));
+
+/* ---------- AI 人物去背（效果）：每一格用 selfie segmenter 找出人，其餘變透明 ---------- */
+const segCv = document.createElement('canvas'), SGX = segCv.getContext('2d', { willReadFrequently: true });
+const mskCv = document.createElement('canvas'), MKX = mskCv.getContext('2d');
+let aiSegWarned = false;
+function aiSegLayer(f) {
+  const s = AI.seg;
+  if (!s) {
+    if (G) return; // effect thumbnails: don't start a model download just for a preview picture
+    if (AI.state.seg !== 'loading') aiGet('seg').then(() => { toast('', 'AI 人物去背準備好了'); }).catch(() => { if (!aiSegWarned) { aiSegWarned = true; toast('', 'AI 模型下載失敗，請確認有連上網路（claude.ai 預覽頁面不能用，要用 GitHub 網站）'); } });
+    else if (!aiSegWarned) { aiSegWarned = true; toast('', '正在下載 AI 人物去背模型（約 10 MB，只有第一次）…'); }
+    return;
+  }
+  const sw = W >= H ? 256 : 144, sh = W >= H ? 144 : 256;
+  if (segCv.width !== sw || segCv.height !== sh) { segCv.width = mskCv.width = sw; segCv.height = mskCv.height = sh; }
+  SGX.clearRect(0, 0, sw, sh); SGX.drawImage(layer, 0, 0, sw, sh);
+  let r; try { r = s.segment(segCv); } catch (e) { return; }
+  const m = r && r.confidenceMasks && r.confidenceMasks[r.confidenceMasks.length - 1]; if (!m) return;
+  const a = m.getAsFloat32Array(), id = MKX.createImageData(sw, sh), soft = .05 + (f.amt / 100) * .35, lo = .5 - soft, hi = .5 + soft;
+  for (let i = 0; i < a.length; i++) { const v = clamp((a[i] - lo) / (hi - lo), 0, 1); id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = 255; id.data[i * 4 + 3] = v * 255; }
+  try { r.close && r.close(); } catch (e) { }
+  MKX.putImageData(id, 0, 0);
+  LX.save(); LX.setTransform(1, 0, 0, 1, 0, 0); LX.globalCompositeOperation = 'destination-in'; LX.imageSmoothingEnabled = true; LX.drawImage(mskCv, 0, 0, W, H); LX.restore();
+}
+FX.aiseg = { name: 'AI 人物去背', desc: '不用綠幕，AI 自動找出人物、把背景去掉（第一次要下載模型）', min: 0, max: 100, def: 30 };
+FXCAT.aiseg = 'Keying'; FXEN.aiseg = 'AI Person Cutout';
+
+/* ---------- AI 看一段素材：分類、物件、笑容、主角位置 ---------- */
+const AI_ZH = { person: '人物', dog: '狗', cat: '貓', bird: '鳥', horse: '馬', car: '車', bicycle: '腳踏車', motorcycle: '機車', bus: '公車', train: '火車', airplane: '飛機', boat: '船', cup: '杯子', bottle: '瓶子', 'wine glass': '酒杯', cake: '蛋糕', pizza: '披薩', sandwich: '三明治', bowl: '碗', 'dining table': '餐桌', chair: '椅子', couch: '沙發', bed: '床', laptop: '筆電', 'cell phone': '手機', book: '書', tv: '電視', 'potted plant': '盆栽', umbrella: '雨傘', handbag: '包包', backpack: '背包', 'sports ball': '球', kite: '風箏', surfboard: '衝浪板', skis: '滑雪板', clock: '時鐘', banana: '香蕉', apple: '蘋果', orange: '柳橙', donut: '甜甜圈', 'teddy bear': '泰迪熊', seashore: '海邊', lakeside: '湖邊', alp: '山', valley: '山谷', volcano: '火山', cliff: '懸崖', espresso: '咖啡', 'coffee mug': '咖啡杯', 'beer glass': '啤酒', 'red wine': '紅酒', fountain: '噴水池', 'park bench': '公園長椅', 'street sign': '路標', 'traffic light': '紅綠燈', 'fire engine': '消防車', 'sports car': '跑車', 'ice cream': '冰淇淋', daisy: '雛菊', 'golden retriever': '黃金獵犬', 'Labrador retriever': '拉布拉多', 'tabby': '虎斑貓', 'Egyptian cat': '貓', 'tiger cat': '貓', 'Persian cat': '波斯貓', 'pizza': '披薩', 'cheeseburger': '漢堡', 'plate': '餐點', 'sandbar': '沙灘', 'lakeside': '湖邊', 'suit': '西裝', 'jersey': '運動衫', 'sunglasses': '太陽眼鏡' };
+const aiZh = s => AI_ZH[s] || AI_ZH[s.split(',')[0]] || s.split(',')[0];
+const AI_CAPS = [
+  [/dog|puppy|retriever|terrier|poodle|corgi|husky|shepherd|spaniel|chihuahua|pug|beagle|shiba/i, ['狗狗來了', '好乖']],
+  [/\bcat\b|tabby|kitten|siamese|persian|egyptian cat/i, ['喵～', '貓主子駕到']],
+  [/bird|parrot|gull|pigeon|duck|goose|swan|hen/i, ['有鳥！']],
+  [/cake|cupcake|candle/i, ['生日快樂', '許個願']],
+  [/pizza|hamburger|hotdog|hot dog|sandwich|burrito|plate|bowl|soup|meat|noodle|ramen|dumpling|bagel|donut|ice cream|icecream|dessert|chocolate|strawberry|banana|orange|apple|trifle|potpie/i, ['開動了', '好好吃']],
+  [/coffee|espresso|cup|mug|latte|teapot/i, ['咖啡時間', '休息一下']],
+  [/wine|beer|cocktail|bottle/i, ['乾杯！']],
+  [/seashore|beach|sandbar|coast|ocean|lakeside|surf|breakwater|promontory/i, ['聽見海浪', '海風來了']],
+  [/alp|mountain|valley|cliff|volcano/i, ['山就在那裡', '登頂！']],
+  [/snow|\bski\b|skis|dogsled|igloo/i, ['好冷！', '白色世界']],
+  [/\bcar\b|cab|taxi|jeep|minivan|truck|\bbus\b|convertible|sports car|limousine|racer/i, ['出發！', '上路囉']],
+  [/bicycle|bike|motorcycle|scooter|moped/i, ['騎車去']],
+  [/train|airplane|airliner|plane|boat|ship|canoe|yacht|airport|liner/i, ['旅行中', '下一站']],
+  [/guitar|piano|drum|violin|microphone|stage|banjo/i, ['來點音樂']],
+  [/flower|daisy|rose|sunflower|tulip|pot|vase/i, ['花開了']],
+  [/book|laptop|computer|desk|notebook|keyboard|monitor|cell phone/i, ['認真工作中']],
+  [/ball|soccer|basketball|tennis|baseball|racket|stadium/i, ['比賽開始']],
+  [/fountain|waterfall|river/i, ['水的聲音']],
+  [/street|traffic|tower|bridge|palace|church|mosque/i, ['城市散步']],
+  [/person/i, ['主角登場', '就是這個人']],
+];
+const aiCapFor = labels => { for (const l of labels) for (const [re, caps] of AI_CAPS) if (re.test(l)) return caps; return null; };
+async function aiLook(id, n, onTick) {
+  const m = MEDIA[id], dur = m.dur, ar = m.user ? (m.w || 16) / (m.h || 9) : m.vertical ? 9 / 16 : 16 / 9;
+  const cw = ar >= 1 ? 320 : Math.round(320 * ar), ch = ar >= 1 ? Math.round(320 / ar) : 320;
+  const c = document.createElement('canvas'); c.width = cw; c.height = ch; const x = c.getContext('2d');
+  let v = null;
+  if (m.user) { v = document.createElement('video'); v.muted = true; v.preload = 'auto'; v.src = m.el.src; await new Promise(r => { v.onloadeddata = r; v.onerror = r; setTimeout(r, 4000); }); }
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const t = Math.min(dur - .05, (i + .5) * dur / n);
+    x.setTransform(1, 0, 0, 1, 0, 0); x.fillStyle = '#000'; x.fillRect(0, 0, cw, ch);
+    if (v) { v.currentTime = t; await new Promise(r => { v.onseeked = r; setTimeout(r, 1500); }); try { x.drawImage(v, 0, 0, cw, ch); } catch (e) { } }
+    else { const nw = m.vertical ? 540 : 960, nh = m.vertical ? 960 : 540; x.save(); x.scale(cw / nw, ch / nh); DRAW[id](x, t, nw, nh); x.restore(); }
+    const s = { t, labels: [], objs: [], smile: 0, faces: 0, person: 0, cx: .5, cy: .5 };
+    try { const r = AI.cls.classify(c); for (const k of (r.classifications[0] || {}).categories || []) if (k.score > .25) s.labels.push(k.categoryName); } catch (e) { }
+    try {
+      const r = AI.det.detect(c); let big = null, area = 0;
+      for (const d of r.detections || []) {
+        const cat = d.categories[0], b = d.boundingBox, A = b.width * b.height / (cw * ch); s.objs.push(cat.categoryName);
+        if (cat.categoryName === 'person') s.person = Math.max(s.person, A);
+        const w8 = A * (cat.categoryName === 'person' ? 1.5 : 1); if (w8 > area) { area = w8; big = b; }
+      }
+      if (big) { s.cx = (big.originX + big.width / 2) / cw; s.cy = (big.originY + big.height / 2) / ch; }
+    } catch (e) { }
+    try {
+      const r = AI.face.detect(c); s.faces = (r.faceLandmarks || []).length;
+      for (const bs of r.faceBlendshapes || []) { let l = 0, rr2 = 0; for (const k of bs.categories) { if (k.categoryName === 'mouthSmileLeft') l = k.score; if (k.categoryName === 'mouthSmileRight') rr2 = k.score; } s.smile = Math.max(s.smile, (l + rr2) / 2); }
+    } catch (e) { }
+    out.push(s);
+    onTick && onTick(i / n); await aeSleep();
+  }
+  if (v) { v.removeAttribute('src'); v.load(); }
+  return out;
+}
+/* =====================================================================
    自動剪輯：逐格分析素材（動態、亮度、顏色、綠幕），猜場景、挑精彩片段，
    排出接起來最順的順序、統一亮度色調、照音樂節拍剪接，自動加看畫面挑的特效字、
    綠幕去背合成、推近、慢動作和轉場。全部在瀏覽器裡算，素材不會上傳。
@@ -4312,8 +4438,23 @@ async function runAutoEdit(o, report) {
   const ana = {}, tag = {};
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i], n = Math.max(6, Math.min(120, Math.round(MEDIA[id].dur / .4)));
-    const step = p => report(`分析畫面 ${i + 1}/${ids.length}：${MEDIA[id].name}`, (i + p) / ids.length * .7);
+    const step = p => report(`分析畫面 ${i + 1}/${ids.length}：${MEDIA[id].name}`, (i + p) / ids.length * (o.ai ? .4 : .7));
     step(0); ana[id] = aeScore(await aeFrames(id, n, step)); tag[id] = aeGuessTag(id, ana[id]);
+  }
+  // real AI (MediaPipe, on this computer): what is in the picture, where the main subject is, who is smiling
+  let aiOK = false; const ai = {}, aiCap = {}, aiSeen = {};
+  if (o.ai) {
+    report('下載 AI 模型（第一次約 23 MB，之後瀏覽器會記住）…', .42);
+    try { await Promise.race([aiAll(), new Promise((_, j) => setTimeout(() => j(new Error('timeout')), 120000))]); aiOK = true; } catch (e) { aiOK = false; }
+    if (aiOK) for (let i = 0; i < ids.length; i++) {
+      const id = ids[i], n = Math.max(4, Math.min(10, Math.round(MEDIA[id].dur / 1.5)));
+      ai[id] = await aiLook(id, n, p => report(`AI 辨識畫面 ${i + 1}/${ids.length}：${MEDIA[id].name}`, .45 + (i + p) / ids.length * .27));
+      if (!MEDIA[id].user) continue; // the drawn practice clips are not real photos: AI labels on them are guesses, so only use them for people / smiles
+      const freq = {}; for (const s of ai[id]) for (const l of [...s.objs, ...s.labels]) freq[l] = (freq[l] || 0) + 1;
+      const top = Object.keys(freq).sort((a, b) => freq[b] - freq[a]);
+      for (const l of top.slice(0, 3)) aiSeen[aiZh(l)] = 1;
+      const caps = aiCapFor(top.slice(0, 4)); if (caps) aiCap[id] = caps;
+    }
   }
   const greens = ids.filter(id => tag[id] === 'green'), bases = ids.filter(id => tag[id] !== 'green');
   if (!bases.length) throw new Error('勾的都是綠幕素材，至少再勾一段當背景的畫面');
@@ -4322,7 +4463,18 @@ async function runAutoEdit(o, report) {
   let L = st.cut; if (beat.period > 0) L = Math.max(1, Math.round(st.cut / beat.period)) * beat.period;
   const n = Math.max(2, Math.round(o.len / L));
   // 2) candidate windows with their average look
-  const winOf = (id, a, len) => { const inn = ana[id].filter(x => x.t >= a && x.t <= a + len); const av = k => inn.reduce((q, x) => q + x[k], 0) / Math.max(1, inn.length); return { id, a, tag: tag[id], score: av('score'), motion: av('motion'), mrel: av('mrel'), luma: av('luma'), r: av('r'), gr: av('gr'), b: av('b'), sat: av('sat') }; };
+  const winOf = (id, a, len) => {
+    const inn = ana[id].filter(x => x.t >= a && x.t <= a + len); const av = k => inn.reduce((q, x) => q + x[k], 0) / Math.max(1, inn.length);
+    const w = { id, a, tag: tag[id], score: av('score'), motion: av('motion'), mrel: av('mrel'), luma: av('luma'), r: av('r'), gr: av('gr'), b: av('b'), sat: av('sat'), cx: .5, cy: .5, smile: 0, person: 0 };
+    if (ai[id] && ai[id].length) {
+      // the AI samples inside this window (or the nearest one): smiles and people make a moment better
+      let ss = ai[id].filter(s => s.t >= a && s.t <= a + len); if (!ss.length) ss = [ai[id].reduce((p, s) => Math.abs(s.t - a - len / 2) < Math.abs(p.t - a - len / 2) ? s : p)];
+      w.smile = Math.max(...ss.map(s => s.smile)); w.person = Math.max(...ss.map(s => s.person));
+      w.cx = ss.reduce((q, s) => q + s.cx, 0) / ss.length; w.cy = ss.reduce((q, s) => q + s.cy, 0) / ss.length;
+      w.score += w.smile * .35 + (w.person > .03 ? .08 : 0);
+    }
+    return w;
+  };
   const cand = [];
   for (const id of bases) {
     const dur = MEDIA[id].dur; if (dur < L * .5 + .1) continue;
@@ -4359,7 +4511,13 @@ async function runAutoEdit(o, report) {
   report('排進時間線、加特效…', .9);
   if (o.aspect !== 'auto') setAspect(o.aspect === 'v', true);
   else { const f = MEDIA[order[0].id]; setAspect(f.user ? f.h > f.w : !!f.vertical, true); }
-  const fx = { keyed: 0, kb: 0, caps: 0, trans: 0, slow: !!slowPick, filled: 0 };
+  const fx = { keyed: 0, kb: 0, caps: 0, trans: 0, slow: !!slowPick, filled: 0, reframed: 0, cutout: 0, smiles: order.filter(c => c.smile > .45).length };
+  // a shot with a person in it (found by the AI) that can be cut out and put over another scene, no green screen needed
+  let cutPick = null;
+  if (aiOK && bases.length >= 2) for (const id of bases) {
+    if (!MEDIA[id].user && !['talk', 'talk2'].includes(id)) continue; // built-in scenery has no real people
+    for (const s of ai[id] || []) { const v = s.person * (1 + s.smile); if (s.person > .1 && (!cutPick || v > cutPick.v)) cutPick = { id, t: s.t, v }; }
+  }
   // footage of the other shape (landscape in a vertical edit…) is enlarged to fill the frame instead of black bars
   const aspectOf = id => { const m = MEDIA[id]; return m.user ? (m.w || 16) / (m.h || 9) : m.vertical ? 9 / 16 : 16 / 9; };
   const fillOf = id => { const sa = aspectOf(id), pa = W / H; return Math.abs(sa - pa) < .05 ? 1 : Math.max(sa / pa, pa / sa); };
@@ -4376,6 +4534,11 @@ async function runAutoEdit(o, report) {
         k.sat = +clamp((st.look ? .82 : 1) * mSat / Math.max(.05, c.sat), .7, 1.3).toFixed(2);
         if (st.look) k.fx = [{ type: 'vignette', amt: 55 }];
         const fill = o.fill ? fillOf(c.id) : 1; if (fill > 1) { k.scale = +fill.toFixed(3); fx.filled++; }
+        // keep the main subject (found by the AI) inside the cropped frame instead of always the centre
+        if (fill > 1 && (Math.abs(c.cx - .5) > .03 || Math.abs(c.cy - .5) > .03)) {
+          const sa = aspectOf(c.id), cw0 = sa >= W / H ? W : H * sa, ch0 = sa >= W / H ? W / sa : H, dw = cw0 * fill, dh = ch0 * fill;
+          k.x = Math.round(clamp(-(c.cx - .5) * dw, -(dw - W) / 2, (dw - W) / 2)); k.y = Math.round(clamp(-(c.cy - .5) * dh, -(dh - H) / 2, (dh - H) / 2)); fx.reframed++;
+        }
         // the calmest shots get a slow push-in (Ken Burns), so nothing on screen is completely still
         if (!slow && c.mrel <= calm) { const Lk = len(k); k.kf = { scale: [[0, fill], [Lk, +(fill * (st.soft ? 1.08 : 1.15)).toFixed(3)]] }; fx.kb++; }
         // transition only where the cut would be jarring; a cut is the most natural join otherwise
@@ -4401,6 +4564,16 @@ async function runAutoEdit(o, report) {
         if (H > W && aspectOf(gid) > 1) { gk.scale = 1.9; gk.y = H * .12; } else { gk.scale = .8; gk.y = H * .08; }
         gk.fx = [{ type: 'key', amt: FX.key ? FX.key.def ?? 40 : 40, color: '#00ff00' }];
         S.connected.push(gk); fx.keyed++;
+      }
+      // AI person cutout: the person is lifted out of their shot and composited over a scene from another clip
+      if (cutPick) {
+        const hostI = S.primary.findIndex((k, i) => i >= Math.floor(S.primary.length * .55) && order[i].id !== cutPick.id && order[i].person < .03);
+        const host = S.primary[hostI >= 0 ? hostI : Math.max(1, S.primary.length - 2)], cd = MEDIA[cutPick.id].dur;
+        const clen = Math.min(cd, Math.max(len(host), L * 2.5)), a0 = clamp(cutPick.t - clen / 2, 0, Math.max(0, cd - clen)), ck = mk(cutPick.id, a0, a0 + clen);
+        // smaller and to one side, standing on the bottom edge, so the scene behind stays visible (like a pop-in cutout)
+        const f = o.fill ? fillOf(cutPick.id) : 1; ck.anchor = host.uid; ck.offset = 0; ck.vol = -96; ck.scale = +(f * .6).toFixed(3);
+        ck.x = Math.round(W * (H > W ? .2 : .25)); ck.y = Math.round(H * .2);
+        ck.fx = [{ type: 'aiseg', amt: 30 }]; S.connected.push(ck); fx.cutout++;
       }
       // music, looped if the track is shorter than the edit
       if (o.music) {
@@ -4428,14 +4601,14 @@ async function runAutoEdit(o, report) {
         const tg = order[i].tag; if (tg === lastTag || tg === 'green') return;
         if (capAt.length && k._start - capAt[capAt.length - 1] < st.capGap) return;
         if (k._start > total - 1.2) return;
-        const pool = AE_CAP[tg] || AE_CAP.misc; used2[tg] = (used2[tg] || 0); const text = pool[used2[tg]++ % pool.length];
+        const ck = aiCap[order[i].id] ? 'ai:' + order[i].id : tg, pool = aiCap[order[i].id] || AE_CAP[tg] || AE_CAP.misc; used2[ck] = (used2[ck] || 0); const text = pool[used2[ck]++ % pool.length];
         addCap(k, text, capAt.length, false); capAt.push(k._start); lastTag = tg;
       });
     });
   } finally { aeBuilding = false; }
   playhead = 0; scrollToPH(); mark('autoedit');
   const srcs = new Set(order.map(c => c.id)).size, tags = [...new Set(ids.map(id => tag[id]))];
-  return { n: order.length, L, total: total0(), want: o.len, bpm: beat.period ? Math.round(60 / beat.period) : 0, srcs, tags, ...fx };
+  return { n: order.length, L, total: total0(), want: o.len, bpm: beat.period ? Math.round(60 / beat.period) : 0, srcs, tags, ...fx, aiTried: o.ai, aiOK, seen: Object.keys(aiSeen).slice(0, 10) };
 }
 const total0 = () => { layout(); return S.primary.reduce((s, c) => s + len(c), 0); };
 const AE_TAGNAME = { sea: '海邊', sky: '藍天', nature: '大自然', sunset: '夕陽', night: '夜景', rain: '雨天', snow: '雪景', warm: '室內暖色', action: '動作', fireworks: '煙火', people: '人物說話', product: '產品', green: '綠幕', misc: '其他' };
@@ -4452,11 +4625,12 @@ function openAutoEdit() {
   <label for="ae-aspect">畫面<select id="ae-aspect"><option value="auto">跟第一段素材一樣</option><option value="v">直式 9:16（Reels／Shorts）</option><option value="h">橫式 16:9（YouTube）</option></select></label>
   <label for="ae-title">開頭標題<input id="ae-title" placeholder="可以不填，例如：我的週末" maxlength="30"></label>
   <label class="ae-chk"><input type="checkbox" id="ae-fill" checked> 畫面形狀不同時放大填滿（橫式素材放進直式影片不留黑邊）</label>
+  <label class="ae-chk"><input type="checkbox" id="ae-ai" checked> 用 AI 辨識畫面：認出東西配特效字、找笑臉、對準主角、不用綠幕自動去背（在你的電腦上跑，第一次要下載約 23 MB）</label>
   <div class="prog" id="ae-prog" hidden><i></i></div><p id="ae-msg"></p>
   <div class="dlg-act"><button class="btn" data-close type="button">取消</button><button class="btn primary" id="ae-go" type="button">開始自動剪輯</button></div>`);
   $('#ae-go').onclick = async () => {
     const go = $('#ae-go'); if (go.dataset.done) return closeModal();
-    const o = { ids: [...document.querySelectorAll('.ae-it input:checked')].map(i => i.value), style: $('#ae-style').value, len: +$('#ae-len').value, music: $('#ae-music').value, aspect: $('#ae-aspect').value, title: $('#ae-title').value.trim(), fill: $('#ae-fill').checked };
+    const o = { ids: [...document.querySelectorAll('.ae-it input:checked')].map(i => i.value), style: $('#ae-style').value, len: +$('#ae-len').value, music: $('#ae-music').value, aspect: $('#ae-aspect').value, title: $('#ae-title').value.trim(), fill: $('#ae-fill').checked, ai: $('#ae-ai').checked };
     const msg = $('#ae-msg'); if (!o.ids.length) { msg.textContent = '至少勾一段影片素材'; return; }
     go.disabled = true; $('#ae-prog').hidden = false;
     try {
@@ -4464,6 +4638,7 @@ function openAutoEdit() {
       $('#ae-prog i').style.width = '100%';
       msg.innerHTML = `完成！用了 <b>${r.srcs} 段素材</b>剪成 <b>${r.n} 個鏡頭</b>，每個約 ${r.L.toFixed(2)} 秒${r.bpm ? `（跟著約 ${r.bpm} BPM 的節拍）` : ''}，總長 ${fmtTC(r.total)}。<br>`
         + `看到的場景：${r.tags.map(t => AE_TAGNAME[t] || t).join('、')}<br>`
+        + (r.aiTried ? (r.aiOK ? `AI 辨識：${r.seen.length ? r.seen.join('、') : '沒有認出特別的東西'}${r.smiles ? `；${r.smiles} 個鏡頭有笑臉（優先挑進來）` : ''}${r.reframed ? `；${r.reframed} 個鏡頭對準主角裁切` : ''}${r.cutout ? '；1 段 AI 人物去背合成（不用綠幕）' : ''}<br>` : 'AI 模型下載失敗（要連網路，而且要用 GitHub 網站，claude.ai 預覽頁面不能用），這次改用顏色和動態判斷。<br>') : '')
         + `自動加了：${r.caps} 個特效字、${r.trans} 個轉場（只加在畫面差很多的地方，其他直接切最自然）、${r.kb} 個推近鏡頭`
         + `${r.keyed ? `、${r.keyed} 段綠幕去背合成` : ''}${r.slow ? '、1 段慢動作' : ''}${r.filled ? `、${r.filled} 段放大填滿畫面` : ''}，每段的亮度和飽和度都調到一致。`
         + `${r.total < r.want - 1 ? `<br>素材不夠剪滿 ${r.want} 秒（不重複用同一個畫面），多勾幾段素材就能剪得更長。` : ''}<br>按空白鍵播放，之後可以照平常一樣手動修改。`;

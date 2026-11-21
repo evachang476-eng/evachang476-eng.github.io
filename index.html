@@ -277,6 +277,13 @@ svg.i { width: 16px; height: 16px; display: block; fill: none; stroke: currentCo
 .ep ul { margin: 0; padding-left: 1.2em; font-size: 12.5px; }
 .ep ol.steps { margin: 6px 0 8px; padding-left: 1.4em; font-size: 12.5px; line-height: 1.75; }
 .ep ol.steps kbd { margin-right: 2px; }
+.ae-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; max-height: 210px; overflow: auto; margin: 6px 0 10px; }
+.ae-it { position: relative; display: block; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; cursor: pointer; font-size: 11.5px; }
+.ae-it input { position: absolute; left: 5px; top: 5px; margin: 0; }
+.ae-it img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; }
+.ae-it span { display: block; padding: 3px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ae-it small { color: var(--muted); }
+.ae-it:has(input:checked) { border-color: var(--sel); }
 .ep .tag { font-size: 11px; color: var(--ok); }
 .ep .tag.no { color: var(--muted); }
 #modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: grid; place-items: center; z-index: 70; padding: 16px; }
@@ -1074,7 +1081,7 @@ function edit(fn) {
   if (r === false) { S = JSON.parse(undoStack.pop()); }
   layout();
   // like FCP's automatic project settings: the first video put into an empty project decides its shape
-  if (r !== false && wasEmpty && typeof setAspect === 'function') {
+  if (r !== false && wasEmpty && !aeBuilding && typeof setAspect === 'function') {
     const k = [...S.primary, ...S.connected].find(c => c.media !== 'gap' && c.media !== 'title' && MEDIA[c.media] && MEDIA[c.media].type === 'video');
     const m = k && MEDIA[k.media];
     if (m) { const vert = m.user ? m.h > m.w : !!m.vertical; if (vert !== (H > W)) setAspect(vert); }
@@ -4204,6 +4211,187 @@ MISSIONS.push(
   { id: 'vertical', adv: 1, t: () => `<b>第 15 課 直式專案</b>　File › Project Format › Vertical 9:16（或在空專案第一個放「直式背景框」，會自動變直式）` },
   { id: 'reels', adv: 1, t: () => `<b>第 15 課 Podcast 短影音</b>　直式專案裡：主故事線放「直式背景框」，上面連接「訪談」、一段去背人物、一段 B-roll 和一個標題，然後 ${kbd('⌘E')} 輸出` },
 );
+
+/* =====================================================================
+   自動剪輯：分析素材（動態、亮度）挑出精彩片段，照音樂節拍剪接，
+   自動加轉場、標題、配樂淡出。全部在瀏覽器裡算，不會上傳素材。
+   ===================================================================== */
+var aeBuilding = false; // while true, edit() does not change the project shape on its own
+const AE_STYLES = {
+  reels: { name: '快節奏 Reels／Shorts', cut: 1.2, trans: ['white', 'zoom', 'pushL'], every: 4, tdur: .25, slow: true, clipVol: -96, tpl: 'scale', hook: true },
+  vlog: { name: 'Vlog 日常', cut: 3, trans: ['dissolve'], every: 1, tdur: .6, clipVol: -14, tpl: 'basic' },
+  cine: { name: '電影感', cut: 4.5, trans: ['dissolve', 'black'], every: 1, tdur: 1, look: true, clipVol: -96, tpl: 'basic' },
+};
+const AE_SKIP = new Set(['vframe', 'green', 'countdown']);
+const aeVideos = () => ORDER.filter(id => { const m = MEDIA[id]; return m && m.type === 'video' && !m.img && !m.compound && !m.mc && !AE_SKIP.has(id) && (!m.user || m.ready); });
+const aeMusic = () => ORDER.filter(id => MEDIA[id] && MEDIA[id].type === 'audio' && (!MEDIA[id].user || MEDIA[id].ready));
+const aeSleep = () => new Promise(r => setTimeout(r, 0));
+
+// draw one small frame of a clip into a 64×36 canvas and return its grey levels
+async function aeFrames(id, step, onTick) {
+  const m = MEDIA[id], dur = m.dur, n = Math.max(2, Math.min(160, Math.floor(dur / step))), sc = document.createElement('canvas');
+  sc.width = 64; sc.height = 36; const sx = sc.getContext('2d', { willReadFrequently: true }), out = [];
+  let v = null;
+  if (m.user) { v = document.createElement('video'); v.muted = true; v.preload = 'auto'; v.src = m.el.src; await new Promise(r => { v.onloadeddata = r; v.onerror = r; setTimeout(r, 4000); }); }
+  for (let i = 0; i < n; i++) {
+    const t = Math.min(dur - .05, (i + .5) * dur / n);
+    sx.setTransform(1, 0, 0, 1, 0, 0); sx.fillStyle = '#000'; sx.fillRect(0, 0, 64, 36);
+    if (v) { v.currentTime = t; await new Promise(r => { v.onseeked = r; setTimeout(r, 1500); }); try { sx.drawImage(v, 0, 0, 64, 36); } catch (e) { } }
+    else { sx.save(); sx.scale(64 / 960, 36 / 540); DRAW[id](sx, t, 960, 540); sx.restore(); }
+    const d = sx.getImageData(0, 0, 64, 36).data, g = new Float32Array(64 * 36);
+    for (let p = 0, q = 0; p < d.length; p += 4, q++) g[q] = (d[p] * .3 + d[p + 1] * .59 + d[p + 2] * .11) / 255;
+    out.push({ t, g });
+    if (i % 8 === 0) { onTick && onTick(i / n); await aeSleep(); }
+  }
+  if (v) { v.removeAttribute('src'); v.load(); }
+  return out;
+}
+// score each moment: movement between frames (most important), good exposure, some contrast
+function aeScore(frames) {
+  const s = frames.map((f, i) => {
+    let mean = 0, diff = 0; for (let k = 0; k < f.g.length; k++) mean += f.g[k]; mean /= f.g.length;
+    let vr = 0; for (let k = 0; k < f.g.length; k++) vr += (f.g[k] - mean) ** 2; vr = Math.sqrt(vr / f.g.length);
+    const p = frames[i - 1] || frames[i + 1]; if (p) for (let k = 0; k < f.g.length; k++) diff += Math.abs(f.g[k] - p.g[k]); diff /= f.g.length;
+    return { t: f.t, motion: diff, expo: 1 - Math.min(1, Math.abs(mean - .5) * 2), contrast: Math.min(1, vr * 4) };
+  });
+  const mx = Math.max(1e-4, ...s.map(x => x.motion));
+  for (const x of s) x.score = (x.motion / mx) * .6 + x.expo * .25 + x.contrast * .15;
+  return s;
+}
+// beat length of the music: built-in tracks know their tempo; your own music is analysed (onset energy + autocorrelation)
+async function aeBeat(mid) {
+  if (!mid) return { period: 0, phase: 0 };
+  const m = MEDIA[mid];
+  if (!m.user) { const np = 1 / (m.bps || 4); return { period: np * Math.max(1, Math.round(.5 / np)), phase: 0 }; } // group notes into ~120 BPM beats
+  try {
+    const ac = new OfflineAudioContext(1, 44100, 44100), buf = await ac.decodeAudioData(await (await fetch(m.el.src)).arrayBuffer());
+    const ch = buf.getChannelData(0), sr = buf.sampleRate, hop = Math.round(sr * .01), n = Math.min(Math.floor(ch.length / hop), 6000), env = new Float32Array(n);
+    let prev = 0; for (let i = 0; i < n; i++) { let e = 0; for (let k = i * hop; k < (i + 1) * hop; k++) e += ch[k] * ch[k]; e = Math.sqrt(e / hop); env[i] = Math.max(0, e - prev); prev = e; }
+    let best = 50, bv = -1; for (let lag = 30; lag <= 100; lag++) { let v = 0; for (let i = lag; i < n; i++) v += env[i] * env[i - lag]; if (v > bv) { bv = v; best = lag; } }
+    let ph = 0, pv = -1; for (let o = 0; o < best; o++) { let v = 0; for (let i = o; i < n; i += best) v += env[i]; if (v > pv) { pv = v; ph = o; } }
+    return { period: best / 100, phase: ph / 100 };
+  } catch (e) { return { period: 0, phase: 0 }; }
+}
+async function runAutoEdit(o, report) {
+  const st = AE_STYLES[o.style], ids = o.ids.filter(id => MEDIA[id]);
+  if (!ids.length) throw new Error('至少選一段影片素材');
+  // 1) analyse every clip
+  const ana = {};
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i], step = Math.max(.4, MEDIA[id].dur / 120);
+    report(`分析素材 ${i + 1}/${ids.length}：${MEDIA[id].name}`, i / ids.length * .7);
+    ana[id] = aeScore(await aeFrames(id, step, p => report(`分析素材 ${i + 1}/${ids.length}：${MEDIA[id].name}`, (i + p) / ids.length * .7)));
+  }
+  // 2) music tempo → cut length is a whole number of beats close to the style's length
+  report('找音樂的節拍…', .75);
+  const beat = await aeBeat(o.music);
+  let L = st.cut; if (beat.period > 0) { const k = Math.max(1, Math.round(st.cut / beat.period)); L = k * beat.period; }
+  const n = Math.max(2, Math.round(o.len / L));
+  // 3) candidate windows in every clip, scored by their average moment score
+  const cand = [];
+  for (const id of ids) {
+    const dur = MEDIA[id].dur, s = ana[id], need = st.slow ? L / 2 : L;
+    if (dur < need + .1) continue;
+    for (let a = Math.min(.3, dur - need); a + need <= dur - .05; a += Math.max(.25, need / 2)) {
+      const inn = s.filter(x => x.t >= a && x.t <= a + need); const sc = inn.length ? inn.reduce((q, x) => q + x.score, 0) / inn.length : 0;
+      cand.push({ id, a, score: sc, motion: inn.length ? inn.reduce((q, x) => q + x.motion, 0) / inn.length : 0 });
+    }
+  }
+  if (!cand.length) throw new Error('選的素材都太短了，換長一點的素材或改成快節奏風格');
+  cand.sort((x, y) => y.score - x.score);
+  const cap = Math.ceil(n / ids.length) + 1, used = [], cnt = {};
+  for (const relax of [false, true]) for (const c of cand) {
+    if (used.length >= n) break;
+    if (used.includes(c)) continue;
+    if (!relax && (cnt[c.id] || 0) >= cap) continue;
+    if (used.some(u => u.id === c.id && Math.abs(u.a - c.a) < (relax ? L * .6 : L * .9))) continue;
+    used.push(c); cnt[c.id] = (cnt[c.id] || 0) + 1;
+  }
+  // never repeat a shot: with too little material the edit is simply shorter (reported to the user)
+  // order: best moment first as the hook (Reels), the rest in story order (clip order, then time)
+  let order = [...used].sort((x, y) => ids.indexOf(x.id) - ids.indexOf(y.id) || x.a - y.a);
+  if (st.hook) {
+    // fast style: best moment first as the hook, then take turns between the clips so the same shot never repeats back to back
+    const top = used.reduce((p, c) => c.score > p.score ? c : p), rest = order.filter(c => c !== top), q = {};
+    for (const c of rest) (q[c.id] = q[c.id] || []).push(c);
+    order = [top]; let last = top.id;
+    while (order.length < used.length) {
+      const keys = Object.keys(q).filter(k => q[k].length).sort((a, b) => q[b].length - q[a].length);
+      if (!keys.length) break;
+      const k = keys.find(k => k !== last) || keys[0]; order.push(q[k].shift()); last = k;
+    }
+  }
+  const slowPick = st.slow ? order.slice(1).reduce((p, c) => (!p || c.motion > p.motion) ? c : p, null) : null;
+  report('排進時間線…', .9);
+  // 4) build the project in one undoable step
+  if (o.aspect !== 'auto') setAspect(o.aspect === 'v', true);
+  else { const f = MEDIA[order[0].id]; const vert = f.user ? f.h > f.w : !!f.vertical; setAspect(vert, true); }
+  aeBuilding = true;
+  try {
+    edit(() => {
+      S.primary = []; S.connected = []; sel = null;
+      order.forEach((c, i) => {
+        const slow = c === slowPick, srcLen = slow ? L / 2 : L, k = mk(c.id, c.a, Math.min(MEDIA[c.id].dur, c.a + srcLen));
+        if (slow) k.speed = .5;
+        k.vol = st.clipVol;
+        if (st.look) { k.sat = .82; k.bright = .96; k.fx = [{ type: 'vignette', amt: 55 }]; }
+        if (i > 0 && i % st.every === 0) { k.trans = Math.min(st.tdur, L * .45); k.transType = st.trans[(i / st.every) % st.trans.length | 0]; }
+        S.primary.push(k);
+      });
+      layout();
+      const total = total0();
+      if (o.music) {
+        const mm = MEDIA[o.music]; let at = 0, inn = beat.phase || 0;
+        while (at < total - .05) {
+          const piece = Math.min(total - at, mm.dur - inn); if (piece <= .05) break;
+          const a = mk(o.music, inn, inn + piece); a.anchor = S.primary[0].uid; a.offset = at; a.vol = -4;
+          if (at === 0) a.fadeIn = .3; if (at + piece >= total - .05) a.fadeOut = Math.min(1.5, piece / 2);
+          S.connected.push(a); at += piece; inn = 0;
+        }
+      }
+      if (o.title) {
+        const tp = TITLES.find(t => t.id === st.tpl) || TITLES[0], c = mk('title', 0, Math.min(3, total * .4));
+        Object.assign(c, { text: o.title, size: H > W ? 64 : tp.size || 72, color: tp.color || '#ffffff', anim: tp.anim, tpl: tp.id, stroke: true });
+        c.anchor = S.primary[0].uid; c.offset = .2; S.connected.push(c);
+      }
+    });
+  } finally { aeBuilding = false; }
+  playhead = 0; scrollToPH(); mark('autoedit');
+  return { n: order.length, L, total: total0(), want: o.len, bpm: beat.period ? Math.round(60 / beat.period) : 0, slow: !!slowPick };
+}
+const total0 = () => { layout(); return S.primary.reduce((s, c) => s + len(c), 0); };
+function openAutoEdit() {
+  const vids = aeVideos(), mus = aeMusic(), mine = vids.filter(id => MEDIA[id].user);
+  const scenic = ['beach', 'city', 'forest', 'sunset', 'rain', 'cafe', 'runner', 'snow', 'fireworks'];
+  const def = new Set(mine.length >= 2 ? mine : mine.length ? [...mine, ...scenic.slice(0, 3)] : scenic);
+  const mdef = mus.find(id => MEDIA[id].user) || 'music2';
+  openModal(`<h3>✨ 自動剪輯</h3><p class="muted">選素材和風格，電腦會分析每段素材哪裡動作最多、曝光最好，挑出精彩片段，照音樂節拍剪接，自動加轉場、標題和配樂淡出。全部在你的瀏覽器裡算，素材不會上傳。<b>會取代目前的時間線</b>，不滿意按 ${kbd('⌘Z')} 就能復原。</p>
+  <div class="ae-list">${vids.map(id => `<label class="ae-it"><input type="checkbox" value="${id}" ${def.has(id) ? 'checked' : ''}><img src="${THUMB[id] || ''}" alt=""><span>${esc(MEDIA[id].name)}${MEDIA[id].user ? '' : ' <small>練習素材</small>'}</span></label>`).join('')}</div>
+  <label for="ae-style">風格<select id="ae-style">${Object.entries(AE_STYLES).map(([k, v]) => `<option value="${k}">${v.name}</option>`).join('')}</select></label>
+  <label for="ae-len">長度<select id="ae-len"><option value="15">15 秒</option><option value="30" selected>30 秒</option><option value="60">60 秒</option></select></label>
+  <label for="ae-music">配樂<select id="ae-music"><option value="">不要配樂</option>${mus.map(id => `<option value="${id}" ${id === mdef ? 'selected' : ''}>${esc(MEDIA[id].name)}</option>`).join('')}</select></label>
+  <label for="ae-aspect">畫面<select id="ae-aspect"><option value="auto">跟第一段素材一樣</option><option value="v">直式 9:16（Reels／Shorts）</option><option value="h">橫式 16:9（YouTube）</option></select></label>
+  <label for="ae-title">開頭標題<input id="ae-title" placeholder="可以不填，例如：我的週末" maxlength="30"></label>
+  <div class="prog" id="ae-prog" hidden><i></i></div><p id="ae-msg"></p>
+  <div class="dlg-act"><button class="btn" data-close type="button">取消</button><button class="btn primary" id="ae-go" type="button">開始自動剪輯</button></div>`);
+  $('#ae-go').onclick = async () => {
+    const go = $('#ae-go'); if (go.dataset.done) return closeModal();
+    const o = { ids: [...document.querySelectorAll('.ae-it input:checked')].map(i => i.value), style: $('#ae-style').value, len: +$('#ae-len').value, music: $('#ae-music').value, aspect: $('#ae-aspect').value, title: $('#ae-title').value.trim() };
+    const msg = $('#ae-msg'); if (!o.ids.length) { msg.textContent = '至少勾一段影片素材'; return; }
+    go.disabled = true; $('#ae-prog').hidden = false;
+    try {
+      const r = await runAutoEdit(o, (t, p) => { msg.textContent = t; $('#ae-prog i').style.width = (p * 100).toFixed(0) + '%'; });
+      $('#ae-prog i').style.width = '100%';
+      msg.innerHTML = `完成！剪成 <b>${r.n} 段</b>，每段約 ${r.L.toFixed(2)} 秒${r.bpm ? `（配合音樂約 ${r.bpm} BPM 的節拍）` : ''}，總長 ${fmtTC(r.total)}${r.slow ? '，動作最大的那段做成慢動作' : ''}。${r.total < r.want - 1 ? `<br>素材不夠剪滿 ${r.want} 秒（不想重複用同一個畫面），多勾幾段素材就能剪得更長。<br>` : ''}按空白鍵播放；之後可以照平常一樣手動修剪，或按 ${kbd('⌘E')} 輸出。`;
+      go.disabled = false; go.textContent = '看結果'; go.dataset.done = '1';
+    } catch (e) { msg.textContent = '自動剪輯失敗：' + (e && e.message ? e.message : e); go.disabled = false; }
+  };
+}
+MENUS.File.splice(2, 0, ['✨ Auto Edit', '自動剪輯（挑精彩片段、跟著節拍剪）', '', openAutoEdit]);
+$('#bt-import').insertAdjacentHTML('afterend', '<button class="tb" id="bt-auto" type="button" title="自動剪輯" aria-label="自動剪輯">✨</button>');
+$('#bt-auto').onclick = openAutoEdit;
+MISSIONS.push({ id: 'autoedit', adv: 1, t: () => `<b>自動剪輯</b>　按上方的 ✨（或 File › ✨ Auto Edit），選素材和風格讓電腦先剪一版，再手動修剪成你要的樣子` });
+
 renderMissions();
 applyPlugins(); makeFxThumbs(); makeTitleThumbs(); buildFxLists(); buildCards(); renderMissions(); focusPanel('browser'); fullRender(); updatePlayBtn();
 restore();

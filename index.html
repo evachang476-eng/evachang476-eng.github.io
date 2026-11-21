@@ -1397,10 +1397,11 @@ function drawTitle(c, k, lt) {
   const wmax = Math.max(1, ...lines.map(l => c.measureText(l).width));
   if (k.bar) { c.fillStyle = k.barColor || 'rgba(58,132,240,.92)'; c.fillRect(-18, y0 - lh * .6, wmax + 50, totalH + lh * .2); c.fillStyle = '#fff'; c.fillRect(-18, y0 - lh * .6, 6, totalH + lh * .2); }
   if (k.box) { const pad = k.size * (k.pad ?? .3), bw = wmax + pad * 2, bh = totalH + pad; c.fillStyle = k.boxColor || 'rgba(0,0,0,.72)'; rr(c, align === 'left' ? -pad : -bw / 2, y0 - lh / 2 - pad / 2, bw, bh, Math.min(10, pad)); c.fill(); }
-  else if (!k.bar) { c.shadowColor = 'rgba(0,0,0,.6)'; c.shadowBlur = 12; }
+  else if (!k.bar) { c.shadowColor = k.soft ? 'rgba(0,0,0,.6)' : 'rgba(0,0,0,.6)'; c.shadowBlur = k.soft ? 9 : 12; if (k.soft) c.shadowOffsetY = 1; }
   lines.forEach((ln, i) => {
     const y = y0 + i * lh, sub = k.lower && i > 0;
-    c.font = sub ? `500 ${Math.round(k.size * .6)}px "Noto Sans TC", sans-serif` : `700 ${k.size}px "Noto Sans TC", sans-serif`;
+    // k.soft: the quiet vlog caption — first line semibold, the lines under it lighter and a bit smaller
+    c.font = sub ? `500 ${Math.round(k.size * .6)}px "Noto Sans TC", sans-serif` : k.soft ? (i ? `400 ${Math.round(k.size * .86)}px "Noto Sans TC", sans-serif` : `600 ${k.size}px "Noto Sans TC", sans-serif`) : `700 ${k.size}px "Noto Sans TC", sans-serif`;
     if (k.d3) { c.save(); c.shadowBlur = 0; for (let d = 6; d > 0; d--) { c.fillStyle = `rgba(0,0,0,${.12 + d * .05})`; c.fillText(ln, d * 1.2, y + d * 1.2); } c.restore(); }
     if (k.stroke) { c.save(); c.shadowBlur = 0; c.lineJoin = 'round'; c.lineWidth = k.size * .16; c.strokeStyle = '#1b1b1b'; c.strokeText(ln, 0, y); c.lineWidth = k.size * .08; c.strokeStyle = '#fff'; c.strokeText(ln, 0, y); c.restore(); }
     c.fillStyle = sub ? 'rgba(255,255,255,.85)' : k.color; c.fillText(ln, 0, y);
@@ -2599,7 +2600,7 @@ function placeholderThumb(name, type) {
 function refreshMedia() { buildCards(); updateCards(); renderTL(); }
 function loadMedia(id, blob, name, t, onReady, ev) {
   const url = URL.createObjectURL(blob);
-  const m = { name, type: t === 'image' ? 'video' : t, img: t === 'image', user: true, dur: 5, ready: false, ev: ev || 'user' };
+  const m = { name, type: t === 'image' ? 'video' : t, img: t === 'image', user: true, dur: 5, ready: false, ev: ev || 'user', shot: blob && blob.lastModified || 0 };
   MEDIA[id] = m; if (!ORDER.includes(id)) ORDER.push(id); THUMB[id] = placeholderThumb(name, t);
   const fail = () => { toast('', `「${name}」無法播放，請改用 MP4（H.264）、JPG、PNG 或 MP3`); m.broken = true; const i = ORDER.indexOf(id); if (i >= 0) ORDER.splice(i, 1); refreshMedia(); };
   const done = () => { refreshMedia(); if (onReady) onReady(); };
@@ -4347,6 +4348,7 @@ async function aiLook(id, n, onTick) {
    ===================================================================== */
 var aeBuilding = false; // while true, edit() does not change the project shape on its own
 const AE_STYLES = {
+  day: { name: '生活 Vlog（a day in my life）', cut: 2.1, clipVol: -96, chrono: true, plain: true, warm: true, capStyle: 'day' },
   reels: { name: '快節奏 Reels／Shorts', cut: 1.2, clipVol: -96, hook: true, slow: true, tpls: ['pop', 'scale'], capGap: 3.5, capDur: 1.6, sameTagCut: true },
   vlog: { name: 'Vlog 日常', cut: 3, clipVol: -14, tpls: ['type', 'slidein'], capGap: 6, capDur: 2.6, soft: true },
   cine: { name: '電影感', cut: 4.5, clipVol: -96, look: true, tpls: ['cine'], capGap: 9, capDur: 3.5, soft: true },
@@ -4431,6 +4433,42 @@ async function aeBeat(mid) {
 }
 // how jarring a cut from shot a to shot b is: colour, brightness and scene type
 const aeCost = (a, b) => Math.hypot(a.r - b.r, a.gr - b.gr, a.b - b.b) * 2 + Math.abs(a.luma - b.luma) * 2.5 + (a.tag !== b.tag ? .35 : 0);
+/* ---------- 「a day in my life」字幕：每個時刻一組，上面是時間、下面是一句隨意的話 ---------- */
+const DAYRANK = { sea: 2, sky: 2, nature: 2, snow: 2, action: 3, warm: 3, product: 3, people: 3, misc: 3, rain: 5, sunset: 6, night: 7, fireworks: 8 };
+const DAY_P = {
+  morning: ['good morning ☀️', '早安 ☀️'], coffee: ['coffee first ☕', '先來杯咖啡 ☕'], food: ['lunch break 🍜', '吃飯時間 🍜'], sweet: ['treat myself 🍦', '犒賞一下自己 🍦'],
+  study: ['study sesh 📚 + dnd', '讀書時間 📚 勿擾'], work: ['getting things done 💻', '認真工作中 💻'], dog: ['walk with my buddy 🐶', '帶狗狗散步 🐶'], cat: ['cat cuddles 🐱', '陪貓咪 🐱'],
+  outdoor: ['fresh air 🌿', '出門透透氣 🌿'], sea: ['by the sea 🌊', '去看海 🌊'], city: ['city walk 🏙️', '城市散步 🏙️'], ride: ['on the way 🚗', '出發囉 🚗'],
+  sport: ['workout time 🏃', '運動時間 🏃'], shop: ['little shopping trip 🛍️', '逛逛街 🛍️'], sunset: ['golden hour 🌇', '黃昏了 🌇'], night: ['winding down 🌙', '慢慢放鬆 🌙'],
+  snow: ['snow day ❄️', '下雪了 ❄️'], rain: ['rainy day ☔', '下雨天 ☔'], fireworks: ['fireworks tonight 🎆', '今晚的煙火 🎆'], people: ['catching up 💬', '聊聊天 💬'],
+  misc: ['little moments ✨', '小日常 ✨'], goodnight: ['good night 🌙', '晚安 🌙'],
+};
+const DAY_RE = [[/dog|puppy|retriever|terrier|poodle|corgi|husky|shepherd|spaniel|pug|beagle|shiba/i, 'dog'], [/\bcat\b|tabby|kitten|siamese|persian/i, 'cat'], [/coffee|espresso|cup|mug|latte|teapot/i, 'coffee'],
+  [/ice cream|icecream|cake|cupcake|donut|chocolate|dessert|trifle/i, 'sweet'], [/pizza|hamburger|sandwich|plate|bowl|soup|noodle|ramen|meat|burrito|bagel|dining table/i, 'food'],
+  [/\bbook|notebook|binder|pencil|library/i, 'study'], [/laptop|computer|keyboard|monitor|desk|mouse|cell phone/i, 'work'], [/\bcar\b|cab|taxi|\bbus\b|train|bicycle|bike|motorcycle|scooter|airplane|airliner/i, 'ride'],
+  [/sports ball|racket|dumbbell|stadium|jersey|running shoe/i, 'sport'], [/handbag|backpack|purse|wallet|boutique/i, 'shop'], [/seashore|beach|sandbar|coast|lakeside|surf/i, 'sea'],
+  [/alp|valley|mountain|park|garden|daisy|flower|tree/i, 'outdoor'], [/street|tower|bridge|traffic|palace/i, 'city'], [/person/i, 'people']];
+const TAGCAT = { sea: 'sea', sky: 'outdoor', nature: 'outdoor', sunset: 'sunset', night: 'night', rain: 'rain', snow: 'snow', warm: 'coffee', action: 'sport', fireworks: 'fireworks', people: 'people', product: 'shop', misc: 'misc' };
+function dayCaptions(order, o, aiTop) {
+  const zh = o.lang === 'zh', P = k => DAY_P[k][zh ? 1 : 0];
+  const moments = []; // consecutive shots of the same clip are one moment, with one caption
+  order.forEach((c, i) => { const last = moments[moments.length - 1]; if (last && last.id === c.id) last.shots.push(i); else moments.push({ id: c.id, tag: c.tag, shots: [i] }); });
+  const M = moments.length, timed = moments.every(mo => MEDIA[mo.id].shot);
+  const fmt = mins => { mins = ((Math.round(mins / 5) * 5) % 1440 + 1440) % 1440; const h = Math.floor(mins / 60), m = mins % 60; return `${h % 12 || 12}:${String(m).padStart(2, '0')}${h < 12 ? 'am' : 'pm'}`; };
+  let n = 0;
+  moments.forEach((mo, j) => {
+    const first = S.primary[mo.shots[0]], lastK = S.primary[mo.shots[mo.shots.length - 1]], span = lastK._start + len(lastK) - first._start;
+    // the clip's own recording time when there is one; otherwise spread the moments over a day, 6:30am → 10:00pm
+    let mins; if (timed) { const d = new Date(MEDIA[mo.id].shot); mins = d.getHours() * 60 + d.getMinutes(); } else mins = 390 + (M > 1 ? j * 930 / (M - 1) : 0);
+    let cat = null; for (const l of (aiTop[mo.id] || []).slice(0, 4)) { for (const [re, k] of DAY_RE) if (re.test(l)) { cat = k; break; } if (cat) break; }
+    cat = cat || TAGCAT[mo.tag] || 'misc';
+    if (j === 0 && mins < 600) cat = 'morning'; else if (j === M - 1 && M > 2 && mins >= 1260) cat = 'goodnight';
+    const c = mk('title', 0, Math.max(1.2, span - .15));
+    Object.assign(c, { text: fmt(mins) + '\n' + (j === 0 && o.title ? o.title : P(cat)), size: H > W ? 26 : 34, color: '#ffffff', anim: 'fade', tpl: 'basic', soft: true, stroke: false });
+    c.y = -Math.round(H * .06); c.anchor = first.uid; c.offset = .15; S.connected.push(c); n++;
+  });
+  return n;
+}
 async function runAutoEdit(o, report) {
   const st = AE_STYLES[o.style], ids = o.ids.filter(id => MEDIA[id]);
   if (!ids.length) throw new Error('至少選一段影片素材');
@@ -4442,7 +4480,7 @@ async function runAutoEdit(o, report) {
     step(0); ana[id] = aeScore(await aeFrames(id, n, step)); tag[id] = aeGuessTag(id, ana[id]);
   }
   // real AI (MediaPipe, on this computer): what is in the picture, where the main subject is, who is smiling
-  let aiOK = false; const ai = {}, aiCap = {}, aiSeen = {};
+  let aiOK = false; const ai = {}, aiCap = {}, aiSeen = {}, aiTop = {};
   if (o.ai) {
     report('下載 AI 模型（第一次約 23 MB，之後瀏覽器會記住）…', .42);
     try { await Promise.race([aiAll(), new Promise((_, j) => setTimeout(() => j(new Error('timeout')), 120000))]); aiOK = true; } catch (e) { aiOK = false; }
@@ -4451,7 +4489,7 @@ async function runAutoEdit(o, report) {
       ai[id] = await aiLook(id, n, p => report(`AI 辨識畫面 ${i + 1}/${ids.length}：${MEDIA[id].name}`, .45 + (i + p) / ids.length * .27));
       if (!MEDIA[id].user) continue; // the drawn practice clips are not real photos: AI labels on them are guesses, so only use them for people / smiles
       const freq = {}; for (const s of ai[id]) for (const l of [...s.objs, ...s.labels]) freq[l] = (freq[l] || 0) + 1;
-      const top = Object.keys(freq).sort((a, b) => freq[b] - freq[a]);
+      const top = Object.keys(freq).sort((a, b) => freq[b] - freq[a]); aiTop[id] = top;
       for (const l of top.slice(0, 3)) aiSeen[aiZh(l)] = 1;
       const caps = aiCapFor(top.slice(0, 4)); if (caps) aiCap[id] = caps;
     }
@@ -4504,6 +4542,13 @@ async function runAutoEdit(o, report) {
     }
     order.push(best); left.delete(best); cur = best;
   }
+  // "a day in my life": tell it in time order — the clip's own recording time when every clip has one,
+  // otherwise by what the scene looks like (morning light → day → sunset → night), one moment after another
+  if (st.chrono) {
+    const when = c => { const m = MEDIA[c.id]; if (!m.shot) return null; const d = new Date(m.shot); return d.getHours() * 60 + d.getMinutes(); };
+    const timed = order.every(c => when(c) != null);
+    order.sort((x, y) => timed ? when(x) - when(y) || x.a - y.a : ((DAYRANK[x.tag] ?? 3) - (DAYRANK[y.tag] ?? 3)) || (ids.indexOf(x.id) - ids.indexOf(y.id)) || x.a - y.a);
+  }
   // 5) look: bring every shot to the same brightness / saturation so the cuts feel like one film
   const med = k => { const v = order.map(c => c[k]).sort((a, b) => a - b); return v[v.length >> 1]; };
   const mLuma = med('luma'), mSat = med('sat');
@@ -4527,11 +4572,20 @@ async function runAutoEdit(o, report) {
     edit(() => {
       S.primary = []; S.connected = []; sel = null;
       order.forEach((c, i) => {
-        const slow = c === slowPick, dur = MEDIA[c.id].dur, srcLen = Math.min(slow ? L / 2 : L, dur - c.a), k = mk(c.id, c.a, c.a + srcLen);
+        // vlog shots breathe: 3–5 beats each (about 1.5–2.5 s), never the same length twice in a row
+        const vl = st.chrono ? (beat.period ? [4, 5, 4, 3, 5, 4][i % 6] * beat.period : [2.1, 2.5, 1.8, 2.3][i % 4]) : null;
+        const slow = c === slowPick, dur = MEDIA[c.id].dur, srcLen = Math.min(vl ?? (slow ? L / 2 : L), dur - c.a), k = mk(c.id, c.a, c.a + srcLen);
         if (slow) k.speed = .5;
         k.vol = st.clipVol;
-        k.bright = +clamp(mLuma / Math.max(.05, c.luma), .85, 1.18).toFixed(2);
-        k.sat = +clamp((st.look ? .82 : 1) * mSat / Math.max(.05, c.sat), .7, 1.3).toFixed(2);
+        if (st.warm) {
+          // one soft, warm look on every shot (instead of flattening them): gentle exposure match, a little less saturation, a touch of warmth
+          k.bright = +clamp(1.02 * mLuma / Math.max(.05, c.luma), .9, 1.12).toFixed(2);
+          k.sat = +clamp(.9 * mSat / Math.max(.05, c.sat), .75, 1.15).toFixed(2);
+          k.fx = [{ type: 'sepia', amt: 10 }];
+        } else {
+          k.bright = +clamp(mLuma / Math.max(.05, c.luma), .85, 1.18).toFixed(2);
+          k.sat = +clamp((st.look ? .82 : 1) * mSat / Math.max(.05, c.sat), .7, 1.3).toFixed(2);
+        }
         if (st.look) k.fx = [{ type: 'vignette', amt: 55 }];
         const fill = o.fill ? fillOf(c.id) : 1; if (fill > 1) { k.scale = +fill.toFixed(3); fx.filled++; }
         // keep the main subject (found by the AI) inside the cropped frame instead of always the centre
@@ -4540,9 +4594,9 @@ async function runAutoEdit(o, report) {
           k.x = Math.round(clamp(-(c.cx - .5) * dw, -(dw - W) / 2, (dw - W) / 2)); k.y = Math.round(clamp(-(c.cy - .5) * dh, -(dh - H) / 2, (dh - H) / 2)); fx.reframed++;
         }
         // the calmest shots get a slow push-in (Ken Burns), so nothing on screen is completely still
-        if (!slow && c.mrel <= calm) { const Lk = len(k); k.kf = { scale: [[0, fill], [Lk, +(fill * (st.soft ? 1.08 : 1.15)).toFixed(3)]] }; fx.kb++; }
-        // transition only where the cut would be jarring; a cut is the most natural join otherwise
-        if (i > 0) {
+        if (!st.plain && !slow && c.mrel <= calm) { const Lk = len(k); k.kf = { scale: [[0, fill], [Lk, +(fill * (st.soft ? 1.08 : 1.15)).toFixed(3)]] }; fx.kb++; }
+        // transition only where the cut would be jarring; a cut is the most natural join otherwise (plain style: always a cut)
+        if (i > 0 && !st.plain) {
           const p = order[i - 1], cost = aeCost(p, c), dl = c.luma - p.luma;
           let type = null;
           if (dl > .25) type = 'white'; else if (dl < -.25) type = 'black';
@@ -4555,7 +4609,7 @@ async function runAutoEdit(o, report) {
       layout();
       const total = S.primary.reduce((s, c) => s + len(c), 0);
       // green screen footage: key it out and put it over another shot
-      for (const gid of greens) {
+      for (const gid of st.plain ? [] : greens) {
         const host = S.primary[Math.min(S.primary.length - 1, Math.max(1, Math.round(S.primary.length * (.35 + .3 * fx.keyed))))];
         const gs = ana[gid].reduce((p, x) => x.score > p.score ? x : p), gd = MEDIA[gid].dur, glen = Math.min(gd, Math.max(len(host), L * 2.5));
         const a0 = clamp(gs.t - glen / 2, 0, Math.max(0, gd - glen)), gk = mk(gid, a0, a0 + glen);
@@ -4566,7 +4620,7 @@ async function runAutoEdit(o, report) {
         S.connected.push(gk); fx.keyed++;
       }
       // AI person cutout: the person is lifted out of their shot and composited over a scene from another clip
-      if (cutPick) {
+      if (cutPick && !st.plain) {
         const hostI = S.primary.findIndex((k, i) => i >= Math.floor(S.primary.length * .55) && order[i].id !== cutPick.id && order[i].person < .03);
         const host = S.primary[hostI >= 0 ? hostI : Math.max(1, S.primary.length - 2)], cd = MEDIA[cutPick.id].dur;
         const clen = Math.min(cd, Math.max(len(host), L * 2.5)), a0 = clamp(cutPick.t - clen / 2, 0, Math.max(0, cd - clen)), ck = mk(cutPick.id, a0, a0 + clen);
@@ -4595,6 +4649,7 @@ async function runAutoEdit(o, report) {
         c.anchor = host.uid; c.offset = .1; S.connected.push(c); fx.caps++;
       };
       const t0 = S.primary[0];
+      if (st.capStyle === 'day') { fx.caps = dayCaptions(order, o, aiTop); return; }
       if (o.title) { addCap(t0, o.title, 0, true); capAt.push(0); }
       let lastTag = o.title ? order[0].tag : null;
       S.primary.forEach((k, i) => {
@@ -4608,7 +4663,7 @@ async function runAutoEdit(o, report) {
   } finally { aeBuilding = false; }
   playhead = 0; scrollToPH(); mark('autoedit');
   const srcs = new Set(order.map(c => c.id)).size, tags = [...new Set(ids.map(id => tag[id]))];
-  return { n: order.length, L, total: total0(), want: o.len, bpm: beat.period ? Math.round(60 / beat.period) : 0, srcs, tags, ...fx, aiTried: o.ai, aiOK, seen: Object.keys(aiSeen).slice(0, 10) };
+  return { n: order.length, L, total: total0(), want: o.len, bpm: beat.period ? Math.round(60 / beat.period) : 0, srcs, tags, ...fx, aiTried: o.ai, aiOK, seen: Object.keys(aiSeen).slice(0, 10), plain: !!st.plain };
 }
 const total0 = () => { layout(); return S.primary.reduce((s, c) => s + len(c), 0); };
 const AE_TAGNAME = { sea: '海邊', sky: '藍天', nature: '大自然', sunset: '夕陽', night: '夜景', rain: '雨天', snow: '雪景', warm: '室內暖色', action: '動作', fireworks: '煙火', people: '人物說話', product: '產品', green: '綠幕', misc: '其他' };
@@ -4616,10 +4671,11 @@ function openAutoEdit() {
   const vids = aeVideos(), mus = aeMusic(), mine = vids.filter(id => MEDIA[id].user);
   const scenic = ['beach', 'city', 'forest', 'sunset', 'rain', 'cafe', 'runner', 'snow', 'fireworks', 'green'];
   const def = new Set(mine.length >= 2 ? mine : mine.length ? [...mine, ...scenic.slice(0, 4)] : scenic);
-  const mdef = mus.find(id => MEDIA[id].user) || 'music2';
+  const myMusic = mus.find(id => MEDIA[id].user), mdef = myMusic || 'music3';
   openModal(`<h3>✨ 自動剪輯</h3><p class="muted">電腦會一格一格分析畫面：哪裡動作多、亮度和顏色、是什麼場景、有沒有綠幕。然後挑精彩片段、排出接起來最順的順序、把每段的亮度色調調一致，照音樂節拍剪接，再自動加上配合畫面的特效字、綠幕去背合成、推近和慢動作。素材不會上傳。<b>會取代目前的時間線</b>，按 ${kbd('⌘Z')} 可以復原。</p>
   <div class="ae-list">${vids.map(id => `<label class="ae-it"><input type="checkbox" value="${id}" ${def.has(id) ? 'checked' : ''}><img src="${THUMB[id] || ''}" alt=""><span>${esc(MEDIA[id].name)}${MEDIA[id].user ? '' : ' <small>練習素材</small>'}</span></label>`).join('')}</div>
   <label for="ae-style">風格<select id="ae-style">${Object.entries(AE_STYLES).map(([k, v]) => `<option value="${k}">${v.name}</option>`).join('')}</select></label>
+  <label for="ae-lang">字幕語言<select id="ae-lang"><option value="zh">中文</option><option value="en">English（IG 常見的小寫英文）</option></select></label>
   <label for="ae-len">長度<select id="ae-len"><option value="15">15 秒</option><option value="30" selected>30 秒</option><option value="60">60 秒</option></select></label>
   <label for="ae-music">配樂<select id="ae-music"><option value="">不要配樂</option>${mus.map(id => `<option value="${id}" ${id === mdef ? 'selected' : ''}>${esc(MEDIA[id].name)}</option>`).join('')}</select></label>
   <label for="ae-aspect">畫面<select id="ae-aspect"><option value="auto">跟第一段素材一樣</option><option value="v">直式 9:16（Reels／Shorts）</option><option value="h">橫式 16:9（YouTube）</option></select></label>
@@ -4628,9 +4684,11 @@ function openAutoEdit() {
   <label class="ae-chk"><input type="checkbox" id="ae-ai" checked> 用 AI 辨識畫面：認出東西配特效字、找笑臉、對準主角、不用綠幕自動去背（在你的電腦上跑，第一次要下載約 23 MB）</label>
   <div class="prog" id="ae-prog" hidden><i></i></div><p id="ae-msg"></p>
   <div class="dlg-act"><button class="btn" data-close type="button">取消</button><button class="btn primary" id="ae-go" type="button">開始自動剪輯</button></div>`);
+  // each style has a fitting built-in track (your own music always wins)
+  $('#ae-style').onchange = () => { if (!myMusic) $('#ae-music').value = ({ day: 'music3', reels: 'music2', vlog: 'music3', cine: 'music' })[$('#ae-style').value] || 'music3'; };
   $('#ae-go').onclick = async () => {
     const go = $('#ae-go'); if (go.dataset.done) return closeModal();
-    const o = { ids: [...document.querySelectorAll('.ae-it input:checked')].map(i => i.value), style: $('#ae-style').value, len: +$('#ae-len').value, music: $('#ae-music').value, aspect: $('#ae-aspect').value, title: $('#ae-title').value.trim(), fill: $('#ae-fill').checked, ai: $('#ae-ai').checked };
+    const o = { ids: [...document.querySelectorAll('.ae-it input:checked')].map(i => i.value), style: $('#ae-style').value, len: +$('#ae-len').value, music: $('#ae-music').value, aspect: $('#ae-aspect').value, title: $('#ae-title').value.trim(), fill: $('#ae-fill').checked, ai: $('#ae-ai').checked, lang: $('#ae-lang').value };
     const msg = $('#ae-msg'); if (!o.ids.length) { msg.textContent = '至少勾一段影片素材'; return; }
     go.disabled = true; $('#ae-prog').hidden = false;
     try {
@@ -4639,8 +4697,8 @@ function openAutoEdit() {
       msg.innerHTML = `完成！用了 <b>${r.srcs} 段素材</b>剪成 <b>${r.n} 個鏡頭</b>，每個約 ${r.L.toFixed(2)} 秒${r.bpm ? `（跟著約 ${r.bpm} BPM 的節拍）` : ''}，總長 ${fmtTC(r.total)}。<br>`
         + `看到的場景：${r.tags.map(t => AE_TAGNAME[t] || t).join('、')}<br>`
         + (r.aiTried ? (r.aiOK ? `AI 辨識：${r.seen.length ? r.seen.join('、') : '沒有認出特別的東西'}${r.smiles ? `；${r.smiles} 個鏡頭有笑臉（優先挑進來）` : ''}${r.reframed ? `；${r.reframed} 個鏡頭對準主角裁切` : ''}${r.cutout ? '；1 段 AI 人物去背合成（不用綠幕）' : ''}<br>` : 'AI 模型下載失敗（要連網路，而且要用 GitHub 網站，claude.ai 預覽頁面不能用），這次改用顏色和動態判斷。<br>') : '')
-        + `自動加了：${r.caps} 個特效字、${r.trans} 個轉場（只加在畫面差很多的地方，其他直接切最自然）、${r.kb} 個推近鏡頭`
-        + `${r.keyed ? `、${r.keyed} 段綠幕去背合成` : ''}${r.slow ? '、1 段慢動作' : ''}${r.filled ? `、${r.filled} 段放大填滿畫面` : ''}，每段的亮度和飽和度都調到一致。`
+        + (r.plain ? `照時間順序排成一天的故事，加了 ${r.caps} 組時間字幕；全部直接切，沒有轉場和特效，整支套同一個溫暖柔和的色調（生活 vlog 的重點是克制）。${r.filled ? ` ${r.filled} 段放大填滿直式畫面。` : ''}<br>` : '') + (r.plain ? '' : `自動加了：${r.caps} 個特效字、${r.trans} 個轉場（只加在畫面差很多的地方，其他直接切最自然）、${r.kb} 個推近鏡頭`
+        + `${r.keyed ? `、${r.keyed} 段綠幕去背合成` : ''}${r.slow ? '、1 段慢動作' : ''}${r.filled ? `、${r.filled} 段放大填滿畫面` : ''}，每段的亮度和飽和度都調到一致。<br>`)
         + `${r.total < r.want - 1 ? `<br>素材不夠剪滿 ${r.want} 秒（不重複用同一個畫面），多勾幾段素材就能剪得更長。` : ''}<br>按空白鍵播放，之後可以照平常一樣手動修改。`;
       go.disabled = false; go.textContent = '看結果'; go.dataset.done = '1';
     } catch (e) { msg.textContent = '自動剪輯失敗：' + (e && e.message ? e.message : e); go.disabled = false; }

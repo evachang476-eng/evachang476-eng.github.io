@@ -1068,10 +1068,18 @@ function shiftKF(kf, d) { const o = {}; if (kf) for (const p in kf) o[p] = kf[p]
 function cutAt(c, d) { if (c.hold) { const n = { ...c, uid: S.nextId++, trans: 0, kf: {}, fx: (c.fx || []).map(f => ({ ...f })), cc: JSON.parse(JSON.stringify(c.cc || [])), hdur: c.hdur - d }; c.hdur = d; return n; } const sp = c.rev ? c.out - d * c.speed : c.in + d * c.speed; const n = { ...c, uid: S.nextId++, trans: 0, kf: shiftKF(c.kf, d), fx: (c.fx || []).map(f => ({ ...f })), cc: JSON.parse(JSON.stringify(c.cc || [])) }; if (c.rev) { n.out = sp; c.in = sp; } else { n.in = sp; c.out = sp; } return n; }
 function commit() { undoStack.push(JSON.stringify(S)); if (undoStack.length > 150) undoStack.shift(); redoStack = []; }
 function edit(fn) {
+  const wasEmpty = !S.primary.length && !S.connected.length;
   commit(); let r;
   try { r = fn(); } catch (err) { r = false; console.error(err); }
   if (r === false) { S = JSON.parse(undoStack.pop()); }
-  layout(); fullRender(); return r !== false;
+  layout();
+  // like FCP's automatic project settings: the first video put into an empty project decides its shape
+  if (r !== false && wasEmpty && typeof setAspect === 'function') {
+    const k = [...S.primary, ...S.connected].find(c => c.media !== 'gap' && c.media !== 'title' && MEDIA[c.media] && MEDIA[c.media].type === 'video');
+    const m = k && MEDIA[k.media];
+    if (m) { const vert = m.user ? m.h > m.w : !!m.vertical; if (vert !== (H > W)) setAspect(vert); }
+  }
+  fullRender(); return r !== false;
 }
 
 /* ---------- missions ---------- */
@@ -3016,7 +3024,8 @@ function revSel() {
 const nope = what => () => toast('', `${what}：練習室沒有這個功能，到公司的 Mac 上試試`);
 const showSide = s => { if ($('#app').classList.contains('no-insp')) $('#bt-insp').click(); setSide(s); };
 const MENUS = {
-  File: [['Import Media…', '匯入媒體', '⌘I', openImport], ['New Project…', '新專案（清空時間線）', '⌘N', newProject], '-',
+  File: [['Import Media…', '匯入媒體', '⌘I', openImport], ['New Project…', '新專案（清空時間線）', '⌘N', newProject],
+    ['Project Format', '專案格式（橫式／直式）', '', [['Horizontal 16:9', '橫式 1920 × 1080', '', () => setAspect(false), () => !(H > W)], ['Vertical 9:16', '直式 1080 × 1920（Reels／Shorts）', '', () => setAspect(true), () => H > W]]], '-',
     ['Share › Export File…', '輸出', '⌘E', () => opExport()]],
   Edit: [['Undo', '復原', '⌘Z', undo], ['Redo', '重做', '⇧⌘Z', redo], '-', ['Delete', '刪除', '⌫', () => opDelete(false)], ['Replace with Gap', '以間隙取代', '⇧⌫', () => opDelete(true)], '-',
     ['Connect to Primary Storyline', '連接到主要故事情節', 'Q', () => opConnect()], ['Insert', '插入', 'W', opInsert], ['Append to Storyline', '加到故事情節結尾', 'E', opAppend], ['Overwrite', '覆寫', 'D', opOverwrite], '-',
@@ -4176,7 +4185,7 @@ const COURSE = [
     here: '這裡按 ⌘E 會真的輸出 1080p 的 MP4，可以直接上傳。', mission: 'export' },
   { n: '第 15 課', t: '實戰：直式知識短影音（Podcast Reels）', goal: 'IG Reels、YouTube Shorts 常見的版型：上面固定一行吸睛標題、中間是主持人說話的畫面、旁邊會跳出去背的人物或圖片、下面一句一句的大字幕，外面套一個品牌背景框。',
     steps: [['⌘N', '新增專案，Video Format 選 Vertical，解析度 1080 × 1920（已經開好的專案：選專案按 ⌘J → Modify）'], ['E', '主故事線放背景框（品牌底圖），拉到跟整支影片一樣長'], ['Q', '把主持人說話的片段連接在背景框上面'], ['⇧T', '在檢視器打開 Transform，把主持人縮小、移到中間的框裡；也可以用 Crop 裁成方形'], ['⌘B / Delete', '把講話中「呃」「那個」和停頓切掉（Jump Cut），節奏要快'], ['⌃T', '加一個標題連接在最上層，拉到整支影片一樣長，放在畫面上方當固定標題；重點字改顏色'], ['Q', '在主持人上面再連接一段去背人物或圖片，加 Keyer 或 Scene Removal Mask，縮小放到旁邊，幾秒後消失'], ['Q', '要解釋東西的時候，連接一段 B-roll 蓋過主持人，只蓋住中間的框（縮放到跟框一樣大）'], ['Edit › Captions', '產生字幕，或一句一句加標題；字要大、白字加黑邊（Stroke），放在框的下緣'], ['⌘E', '輸出 1080 × 1920，上傳 Reels／Shorts']],
-    here: '專案檢查器（不選片段時的右邊）按「改成直式 9:16」→ 主故事線放「直式背景框」→ 用 Q 連接「訪談」，在檢查器把 Scale 調到 85%、Position Y 往上一點對準框 → 連接「綠幕人物」加 Keyer、縮小放在旁邊 → 連接「咖啡特寫」當 B-roll → ⌥Y 加標題放最上面 → 輸出。', mission: 'reels' },
+    here: '新專案（⌘N）第一個放「直式背景框」，專案會自動變成直式；已經有片段的專案用 File › Project Format › Vertical 9:16 切換 → 主故事線放「直式背景框」→ 用 Q 連接「訪談」，在檢查器把 Scale 調到 85%、Position Y 往上一點對準框 → 連接「綠幕人物」加 Keyer、縮小放在旁邊 → 連接「咖啡特寫」當 B-roll → ⌥Y 加標題放最上面 → 輸出。', mission: 'reels' },
 ];
 function fullCourse() {
   const kk = s => s ? (/[⌘⌥⌃⇧]/.test(s) || /^[A-Z]( \/ [A-Z])*$/.test(s) || s.length <= 7 ? kbd(s) : `<b>${esc(s)}</b>`) : '';
@@ -4192,7 +4201,7 @@ MISSIONS.push(
   { id: 'precision', adv: 1, t: () => `<b>第 5 課 精確編輯器</b>　雙擊兩段片段之間的剪接點，打開 Precision Editor 調整` },
   { id: 'caption', adv: 1, t: () => `<b>第 8 課 字幕</b>　Edit › Captions › Transcribe to Captions，幫訪談自動產生字幕` },
   { id: 'roles', adv: 1, t: () => `<b>第 9 課 Roles</b>　打開時間線索引（左上角 Index）的 Roles，關掉 Music 聽聽看` },
-  { id: 'vertical', adv: 1, t: () => `<b>第 15 課 直式專案</b>　不選任何片段，在右邊專案檢查器按「改成直式 9:16」` },
+  { id: 'vertical', adv: 1, t: () => `<b>第 15 課 直式專案</b>　File › Project Format › Vertical 9:16（或在空專案第一個放「直式背景框」，會自動變直式）` },
   { id: 'reels', adv: 1, t: () => `<b>第 15 課 Podcast 短影音</b>　直式專案裡：主故事線放「直式背景框」，上面連接「訪談」、一段去背人物、一段 B-roll 和一個標題，然後 ${kbd('⌘E')} 輸出` },
 );
 renderMissions();

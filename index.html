@@ -2453,9 +2453,17 @@ function opExport() {
       };
       const blob = fmt[1] === 'wc' ? await recordTimelineWC(mbps, prog) : await recordTimeline(fmt, mbps, prog);
       if (!blob) return; // cancelled
-      const file = `${name}.${fmt[0]}`, url = downloadBlob(blob, file);
+      const file = `${name}.${fmt[0]}`, mb = (blob.size / 1048576).toFixed(1);
       $('#ex-prog i').style.width = '100%';
-      msg.innerHTML = `輸出完成：<b>${esc(file)}</b>（${(blob.size / 1048576).toFixed(1)} MB），已開始下載。沒看到檔案的話 <a href="${url}" download="${esc(file)}">按這裡再下載一次</a>。`;
+      // in claude.ai the file goes through its save dialog; elsewhere a normal browser download with a backup link
+      if (typeof ceDownloads !== 'undefined' && ceDownloads) {
+        msg.innerHTML = `輸出完成：<b>${esc(file)}</b>（${mb} MB）。請在跳出的視窗按「儲存」。`;
+        try { await saveFile(blob, file); msg.innerHTML = `已儲存：<b>${esc(file)}</b>（${mb} MB）。`; }
+        catch (e) { msg.innerHTML = `沒有存檔（${esc(e && e.code === 'declined' ? '你按了取消' : (e && e.code) || '無法儲存')}）。<button class="btn" type="button" id="ex-again">再存一次</button>`; const ag = $('#ex-again'); if (ag) ag.onclick = () => saveFile(blob, file).then(() => { msg.innerHTML = `已儲存：<b>${esc(file)}</b>（${mb} MB）。`; }).catch(() => { }); }
+      } else {
+        const url = downloadBlob(blob, file);
+        msg.innerHTML = `輸出完成：<b>${esc(file)}</b>（${mb} MB），已開始下載。沒看到檔案的話 <a href="${url}" download="${esc(file)}">按這裡再下載一次</a>。`;
+      }
       go.disabled = false; go.textContent = '完成'; go.dataset.done = '1'; mark('export');
       if (H > W && S.primary.some(k => k.media === 'vframe') && S.connected.some(k => k.media === 'talk' || k.media === 'talk2') && S.connected.some(k => k.media === 'title') && S.connected.length >= 4) mark('reels');
     } catch (e) {
@@ -4708,6 +4716,224 @@ MENUS.File.splice(2, 0, ['✨ Auto Edit', '自動剪輯（分析畫面、特效�
 $('#bt-import').insertAdjacentHTML('afterend', '<button class="tb" id="bt-auto" type="button" title="自動剪輯" aria-label="自動剪輯">✨</button>');
 $('#bt-auto').onclick = openAutoEdit;
 MISSIONS.push({ id: 'autoedit', adv: 1, t: () => `<b>自動剪輯</b>　按上方的 ✨（或 File › ✨ Auto Edit），選素材和風格讓電腦先剪一版，再手動修剪成你要的樣子` });
+/* =====================================================================
+   🤖 Claude 全 AI 剪輯：把每段素材的縮圖給 Claude 看，Claude 寫出整支影片的剪輯腳本
+   （故事順序、每個鏡頭用哪幾秒、字幕、轉場、效果、調色、配樂），練習室照腳本排好時間線。
+   只在 claude.ai 的練習室裡能用（用你自己的 Claude 帳號）；影片本身不上傳，只送縮圖。
+   ===================================================================== */
+let ceSample = null, ceDownloads = null;
+if (window.claude && window.claude.use) {
+  window.claude.use('sample').then(s => { ceSample = s; }).catch(() => { });
+  window.claude.use('downloads').then(d => { ceDownloads = d; }).catch(() => { });
+}
+// save a generated file: through the claude.ai save dialog when the page runs there, otherwise a normal download
+async function saveFile(blob, filename) {
+  if (ceDownloads) { await ceDownloads.save({ filename, data: blob }); return 'saved'; }
+  return downloadBlob(blob, filename);
+}
+const CE_LOOKS = {
+  natural: k => { },
+  warm: k => { k.sat = .9; k.bright = 1.02; k.fx.push({ type: 'sepia', amt: 10 }); },
+  film: k => { k.sat = .82; k.fx.push({ type: 'sepia', amt: 16 }, { type: 'vignette', amt: 40 }); },
+  cool: k => { k.sat = .88; k.bright = 1.03; k.fx.push({ type: 'hue', amt: 8 }); },
+  vivid: k => { k.sat = 1.25; k.bright = 1.03; },
+  bw: k => { k.fx.push({ type: 'bw', amt: 100 }); },
+};
+const CE_TRANS = ['cut', 'dissolve', 'black', 'white', 'zoom', 'pushL', 'pushU', 'blur', 'wipe', 'iris'];
+// a contact sheet: one row per clip, four frames each, labelled so Claude can refer to clips and times
+async function ceSheet(rows) {
+  const FW = 240, FH = 135, LW = 96, RH = FH + 14, cv2 = document.createElement('canvas');
+  cv2.width = LW + 4 * (FW + 4); cv2.height = rows.length * RH; const x = cv2.getContext('2d');
+  x.fillStyle = '#111'; x.fillRect(0, 0, cv2.width, cv2.height);
+  for (let r = 0; r < rows.length; r++) {
+    const { cid, id } = rows[r], m = MEDIA[id], y = r * RH;
+    x.fillStyle = '#ffd24a'; x.font = '700 30px sans-serif'; x.textBaseline = 'top'; x.fillText(cid, 10, y + 10);
+    x.fillStyle = '#ccc'; x.font = '12px sans-serif'; x.fillText(m.dur.toFixed(1) + 's', 10, y + 50);
+    let v = null;
+    if (m.user) { v = document.createElement('video'); v.muted = true; v.preload = 'auto'; v.src = m.el.src; await new Promise(res => { v.onloadeddata = res; v.onerror = res; setTimeout(res, 4000); }); }
+    for (let i = 0; i < 4; i++) {
+      const t = Math.min(m.dur - .05, m.dur * (.1 + i * .25)), fx0 = LW + i * (FW + 4);
+      x.save(); x.beginPath(); x.rect(fx0, y, FW, FH); x.clip(); x.fillStyle = '#000'; x.fillRect(fx0, y, FW, FH);
+      if (v) { v.currentTime = t; await new Promise(res => { v.onseeked = res; setTimeout(res, 1500); }); const ar = (m.w || 16) / (m.h || 9), dw = ar >= FW / FH ? FW : FH * ar, dh = ar >= FW / FH ? FW / ar : FH; try { x.drawImage(v, fx0 + (FW - dw) / 2, y + (FH - dh) / 2, dw, dh); } catch (e) { } }
+      else if (m.img) { const ar = (m.w || 16) / (m.h || 9), dw = ar >= FW / FH ? FW : FH * ar, dh = ar >= FW / FH ? FW / ar : FH; x.drawImage(m.el, fx0 + (FW - dw) / 2, y + (FH - dh) / 2, dw, dh); }
+      else { const nw = m.vertical ? 540 : 960, nh = m.vertical ? 960 : 540, s = Math.min(FW / nw, FH / nh); x.translate(fx0 + (FW - nw * s) / 2, y + (FH - nh * s) / 2); x.scale(s, s); DRAW[id](x, t, nw, nh); }
+      x.restore();
+      x.fillStyle = 'rgba(0,0,0,.65)'; x.fillRect(fx0, y + FH - 18, 62, 18); x.fillStyle = '#fff'; x.font = '12px sans-serif'; x.fillText(`${cid} ${t.toFixed(1)}s`, fx0 + 4, y + FH - 15);
+    }
+    if (v) { v.removeAttribute('src'); v.load(); }
+  }
+  return new Promise(res => cv2.toBlob(res, 'image/jpeg', .85));
+}
+function ceClipText(rows) {
+  return rows.map(({ cid, id }) => {
+    const m = MEDIA[id], shape = m.user ? ((m.h || 9) > (m.w || 16) ? '直式' : '橫式') : m.vertical ? '直式' : '橫式';
+    const when = m.shot ? `，檔案時間 ${new Date(m.shot).toLocaleString('zh-TW', { hour12: false })}` : '';
+    return `${cid}：「${m.name}」，${m.dur.toFixed(1)} 秒，${shape}，${m.user ? (m.img ? '使用者的照片' : '使用者拍的影片') : '練習室內建的電腦繪圖素材'}${when}`;
+  }).join('\n');
+}
+const ceMusicText = () => aeMusic().map(id => { const m = MEDIA[id]; return `${id}：「${m.name}」，${m.dur.toFixed(0)} 秒${m.user ? '，使用者的音樂' : m.bps ? `，${m.bps >= 5 ? '輕快' : m.bps <= 2 ? '慢、抒情' : '中等'}` : ''}`; }).join('\n');
+function cePrompt(o, rows) {
+  return `你是一位品味很好、很克制的短影音剪輯師。請看附上的縮圖表（每一列是一段素材，最左邊黃色是代號，每格下面寫代號和那一格的秒數），替使用者規劃一支影片。
+
+使用者的要求：${o.brief || '（沒有特別要求，請剪一支自然好看的短片）'}
+長度：大約 ${o.len} 秒。畫面：${o.aspect === 'v' ? '直式 9:16' : o.aspect === 'h' ? '橫式 16:9' : '跟主要素材一樣'}。字幕語言：${o.lang === 'en' ? '英文（小寫、口語）' : '繁體中文（台灣用語）'}。
+
+素材：
+${ceClipText(rows)}
+
+可用的配樂（music 填 id，或 null 不要配樂）：
+${ceMusicText()}
+
+剪輯原則：
+- 先想清楚故事（開場吸引人 → 鋪陳 → 重點 → 收尾），鏡頭順序要有道理，不要只照素材順序。
+- 大部分直接切（transition "cut"）；只有時間或場景明顯轉換才用 dissolve 或 black，整支最多 2～3 個轉場。
+- 鏡頭長度有變化（大約 1.2～4 秒），同一段素材不要連續出現，也不要重複用同一段畫面。
+- 字幕少而精，只在需要的地方加，要配合畫面內容；不要每個鏡頭都有字。
+- 效果要有理由才加：kenburns（慢慢推近，用在安靜的畫面）、slowmo（動作精彩的瞬間）。不確定就用 none。
+- 縮圖表只看得到四格，in/out 要在素材長度內，避開開頭和結尾不穩的地方。
+- 綠幕素材（背景全綠）不要放主線，要放在 overlays 用 type "green" 合成到別的畫面上。
+
+只回傳一個 JSON 物件，不要其他文字，格式：
+{"summary":"一兩句說明你的剪輯想法",
+ "clips":{"C1":"一句話描述這段素材的畫面", "...":"..."},
+ "look":"natural|warm|film|cool|vivid|bw",
+ "music":"music3",
+ "shots":[{"clip":"C2","in":1.5,"out":3.8,"transition":"cut","effect":"none","caption":null,"why":"為什麼放這裡"},
+          {"clip":"C1","in":0.5,"out":2.4,"transition":"dissolve","effect":"kenburns","caption":{"text":"早安 ☀️","style":"soft"},"why":"..."}],
+ "overlays":[{"clip":"C5","in":0,"out":3,"atShot":2,"type":"green","position":"right"}]}
+caption.style 可選：soft（小小的兩行字，可用 \\n 換行，適合生活 vlog）、pop（綜藝跳字）、cine（電影感標題）、lower（下方說明條）。transition 可選：${CE_TRANS.join('、')}。effect 可選：none、kenburns、slowmo。`;
+}
+function ceAddMusic(mid, total, phase) {
+  const mm = MEDIA[mid]; let at = 0, inn = phase || 0;
+  while (at < total - .05) {
+    const piece = Math.min(total - at, mm.dur - inn); if (piece <= .05) break;
+    const a = mk(mid, inn, inn + piece); a.anchor = S.primary[0].uid; a.offset = at; a.vol = -6;
+    if (at === 0) a.fadeIn = .4; if (at + piece >= total - .05) a.fadeOut = Math.min(1.8, piece / 2);
+    S.connected.push(a); at += piece; inn = 0;
+  }
+}
+async function ceApply(plan, map, o) {
+  const shots = (Array.isArray(plan.shots) ? plan.shots : []).filter(s => s && map[s.clip] && MEDIA[map[s.clip]]);
+  if (!shots.length) throw new Error('Claude 的剪輯腳本裡沒有可以用的鏡頭');
+  const mus = plan.music && MEDIA[plan.music] && MEDIA[plan.music].type === 'audio' ? plan.music : null;
+  const beat = mus ? await aeBeat(mus) : { period: 0, phase: 0 };
+  if (o.aspect !== 'auto') setAspect(o.aspect === 'v', true);
+  else { const f = MEDIA[map[shots[0].clip]]; setAspect(f.user ? (f.h || 9) > (f.w || 16) : !!f.vertical, true); }
+  const aspectOf = id => { const m = MEDIA[id]; return m.user ? (m.w || 16) / (m.h || 9) : m.vertical ? 9 / 16 : 16 / 9; };
+  const fillOf = id => { const sa = aspectOf(id), pa = W / H; return Math.abs(sa - pa) < .05 ? 1 : Math.max(sa / pa, pa / sa); };
+  const look = CE_LOOKS[plan.look] || CE_LOOKS.natural;
+  let caps = 0, trans = 0, effects = 0, overs = 0;
+  aeBuilding = true;
+  try {
+    edit(() => {
+      S.primary = []; S.connected = []; sel = null;
+      shots.forEach((s, i) => {
+        const id = map[s.clip], dur = MEDIA[id].dur, slow = s.effect === 'slowmo';
+        let a = clamp(+s.in || 0, 0, Math.max(0, dur - .4)), b = clamp(+s.out || a + 2, a + .4, dur);
+        const sp = slow ? .5 : 1;
+        // land every cut on the music's beat (at least two beats long)
+        if (beat.period) { const k = Math.max(2, Math.round((b - a) / sp / beat.period)); b = Math.min(dur, a + k * beat.period * sp); }
+        const k = mk(id, a, b); k.speed = sp; k.vol = mus ? -96 : 0; k.fx = [];
+        look(k);
+        const fill = o.fill ? fillOf(id) : 1; if (fill > 1) k.scale = +fill.toFixed(3);
+        if (s.effect === 'kenburns') { k.kf = { scale: [[0, fill], [len(k), +(fill * 1.1).toFixed(3)]] }; effects++; }
+        if (slow) effects++;
+        const tr = String(s.transition || 'cut');
+        if (i > 0 && tr !== 'cut' && TREN[tr]) { k.trans = +Math.min(tr === 'dissolve' || tr === 'black' ? .8 : .35, len(k) * .45).toFixed(2); k.transType = tr; trans++; }
+        S.primary.push(k);
+      });
+      layout();
+      const total = S.primary.reduce((q, c) => q + len(c), 0);
+      // captions Claude wrote for specific shots
+      shots.forEach((s, i) => {
+        const cp = s.caption; if (!cp || !cp.text) return; const host = S.primary[i];
+        const style = ['soft', 'pop', 'cine', 'lower'].includes(cp.style) ? cp.style : 'soft';
+        const c = mk('title', 0, Math.max(1.2, Math.min(3.5, len(host) + .4)));
+        const text = String(cp.text).slice(0, 60);
+        if (style === 'soft') Object.assign(c, { text, size: H > W ? 26 : 34, color: '#ffffff', anim: 'fade', tpl: 'basic', soft: true }), c.y = -Math.round(H * .06);
+        else { const tp = TITLES.find(t => t.id === ({ pop: 'pop', cine: 'cine', lower: 'lower' })[style]) || TITLES[0]; Object.assign(c, { text, size: (tp.size || 72) * (H > W ? .7 : .85), color: tp.color || '#ffffff', anim: tp.anim, tpl: tp.id, d3: !!tp.d3, stroke: !!tp.stroke, lower: !!tp.lower, bar: !!tp.bar }); }
+        c.anchor = host.uid; c.offset = .15; S.connected.push(c); caps++;
+      });
+      // overlays: green screen keyed over another shot, or a small picture-in-picture
+      for (const ov of Array.isArray(plan.overlays) ? plan.overlays : []) {
+        const id = map[ov.clip], host = S.primary[clamp(Math.round(+ov.atShot || 0), 0, S.primary.length - 1)]; if (!id || !MEDIA[id] || !host) continue;
+        const dur = MEDIA[id].dur, a = clamp(+ov.in || 0, 0, Math.max(0, dur - .5)), b = clamp(+ov.out || a + 3, a + .5, dur), g = mk(id, a, b);
+        g.anchor = host.uid; g.offset = 0; g.vol = -96; const side = ov.position === 'left' ? -1 : ov.position === 'center' ? 0 : 1;
+        if (ov.type === 'green') { g.fx = [{ type: 'key', amt: FX.key ? FX.key.def ?? 30 : 30, color: '#00ff00' }]; g.scale = +((o.fill ? fillOf(id) : 1) * .75).toFixed(3); g.x = Math.round(side * W * .2); g.y = Math.round(H * .12); }
+        else { g.scale = .38; g.x = Math.round(side * W * .28); g.y = -Math.round(H * .28); }
+        S.connected.push(g); overs++;
+      }
+      if (mus) ceAddMusic(mus, total, beat.phase);
+    });
+  } finally { aeBuilding = false; }
+  playhead = 0; scrollToPH(); mark('claudeedit');
+  return { n: shots.length, total: total0(), caps, trans, effects, overs, music: mus };
+}
+function openClaudeEdit() {
+  if (!ceSample) return openModal(`<h3>🤖 Claude 全 AI 剪輯</h3><p>這個功能要在 <b>claude.ai</b> 上打開練習室才能用：Claude 會用你自己的 Claude 帳號看素材的縮圖、規劃整支影片。</p><p class="muted">在一般網址（例如 GitHub 網站）上沒有連到 Claude，請改用上方的 ✨ 自動剪輯（規則加本機 AI）。</p><div class="dlg-act"><button class="btn primary" data-close type="button">知道了</button></div>`);
+  const vids = ORDER.filter(id => { const m = MEDIA[id]; return m && m.type === 'video' && !m.compound && !m.mc && id !== 'vframe' && (!m.user || m.ready); });
+  const mine = vids.filter(id => MEDIA[id].user), def = new Set(mine.length >= 2 ? mine : [...mine, 'beach', 'cafe', 'forest', 'sunset', 'city', 'runner'].slice(0, Math.max(6, mine.length)));
+  openModal(`<h3>🤖 Claude 全 AI 剪輯</h3><p class="muted">Claude 會看每段素材的 4 張縮圖，寫出整支影片的剪輯腳本：故事順序、每個鏡頭用哪幾秒、字幕、轉場、效果、調色和配樂，再自動排進時間線。用的是你自己的 Claude 帳號額度；<b>只送縮圖，影片本身不上傳</b>。會取代目前的時間線，按 ${kbd('⌘Z')} 可以復原。</p>
+  <div class="ae-list">${vids.map(id => `<label class="ae-it"><input type="checkbox" value="${id}" ${def.has(id) ? 'checked' : ''}><img src="${THUMB[id] || ''}" alt=""><span>${esc(MEDIA[id].name)}${MEDIA[id].user ? '' : ' <small>練習素材</small>'}</span></label>`).join('')}</div>
+  <label for="ce-brief">你想要什麼樣的影片？<textarea id="ce-brief" rows="2" placeholder="例如：30 秒的週末 vlog，溫柔一點，開頭放咖啡、結尾放夕陽"></textarea></label>
+  <label for="ce-len">長度<select id="ce-len"><option value="15">15 秒</option><option value="30" selected>30 秒</option><option value="60">60 秒</option></select></label>
+  <label for="ce-aspect">畫面<select id="ce-aspect"><option value="auto">跟主要素材一樣</option><option value="v">直式 9:16（Reels／Shorts）</option><option value="h">橫式 16:9（YouTube）</option></select></label>
+  <label for="ce-lang">字幕語言<select id="ce-lang"><option value="zh">中文</option><option value="en">English</option></select></label>
+  <label for="ce-tier">Claude 模型<select id="ce-tier"><option value="default">標準（約 30～90 秒）</option><option value="complex">最強（想得更久，品味更好）</option></select></label>
+  <label class="ae-chk"><input type="checkbox" id="ce-fill" checked> 畫面形狀不同時放大填滿（不留黑邊）</label>
+  <div class="prog" id="ce-prog" hidden><i></i></div><p id="ce-msg"></p><div id="ce-plan"></div>
+  <div id="ce-rev" hidden><label for="ce-revtext">想改哪裡？跟 Claude 說<textarea id="ce-revtext" rows="2" placeholder="例如：節奏再快一點、開頭換成狗那段、字幕少一點"></textarea></label></div>
+  <div class="dlg-act"><button class="btn" data-close type="button">關閉</button><button class="btn" id="ce-stop" type="button" hidden>停止</button><button class="btn" id="ce-revgo" type="button" hidden>請 Claude 修改</button><button class="btn primary" id="ce-go" type="button">讓 Claude 剪輯</button></div>`);
+  let ctl = null, turns = null, map = null, o = null, t0 = 0, timer = null;
+  const msg = $('#ce-msg'), prog = $('#ce-prog');
+  const busy = (on, text) => {
+    $('#ce-go').disabled = $('#ce-revgo').disabled = on; $('#ce-stop').hidden = !on; prog.hidden = !on; clearInterval(timer);
+    if (on) { t0 = Date.now(); const tick = () => { msg.textContent = `${text}（${Math.round((Date.now() - t0) / 1000)} 秒）`; prog.querySelector('i').style.width = Math.min(95, (Date.now() - t0) / 900) + '%'; }; tick(); timer = setInterval(tick, 500); }
+  };
+  const errText = e => ({ not_granted: '你沒有允許這個頁面使用 Claude。', rate_limited: 'Claude 使用額度暫時用完了，稍後再試。', images_unavailable: '這裡不能把縮圖傳給 Claude。', invalid_json: 'Claude 的回覆格式不對，再按一次試試。', refused: 'Claude 拒絕了這個要求，換個說法試試。', cancelled: '已停止。', session_expired: '要重新登入 Claude。' })[e && e.code] || ('Claude 剪輯失敗：' + (e && (e.message || e.code) || e));
+  const show = (plan, r) => {
+    msg.innerHTML = `完成！${r.n} 個鏡頭、總長 ${fmtTC(r.total)}、${r.caps} 個字幕、${r.trans} 個轉場、${r.effects} 個效果${r.overs ? `、${r.overs} 段合成` : ''}${r.music ? `、配樂「${esc(MEDIA[r.music].name)}」` : ''}。按空白鍵播放。`;
+    $('#ce-plan').innerHTML = `<p><b>Claude 的剪輯想法：</b>${esc(plan.summary || '')}</p><ol class="steps">${(plan.shots || []).map(s => `<li><b>${esc(s.clip)}</b> ${(+s.in || 0).toFixed(1)}–${(+s.out || 0).toFixed(1)}s ${s.caption && s.caption.text ? `「${esc(s.caption.text)}」` : ''} <small>${esc(s.why || '')}</small></li>`).join('')}</ol>`;
+    $('#ce-rev').hidden = false; $('#ce-revgo').hidden = false; $('#ce-go').textContent = '從頭重新剪';
+  };
+  $('#ce-stop').onclick = () => ctl && ctl.abort();
+  $('#ce-go').onclick = async () => {
+    const ids = [...document.querySelectorAll('.ae-it input:checked')].map(i => i.value);
+    if (!ids.length) { msg.textContent = '至少勾一段素材'; return; }
+    o = { brief: $('#ce-brief').value.trim(), len: +$('#ce-len').value, aspect: $('#ce-aspect').value, lang: $('#ce-lang').value, fill: $('#ce-fill').checked, tier: $('#ce-tier').value };
+    let lim = null; try { lim = await ceSample.limits(); } catch (e) { }
+    const maxImg = lim && lim.images ? lim.images.maxCount : 0;
+    if (!maxImg) { msg.textContent = '這裡不能把縮圖傳給 Claude（需要在 claude.ai 打開，而且允許傳送圖片）。'; return; }
+    const per = Math.max(1, Math.ceil(ids.length / maxImg)), use = ids.slice(0, maxImg * Math.min(per, 6));
+    const rows = use.map((id, i) => ({ cid: 'C' + (i + 1), id })); map = Object.fromEntries(rows.map(r => [r.cid, r.id]));
+    busy(true, '製作縮圖…');
+    try {
+      const sheets = []; for (let i = 0; i < rows.length; i += Math.min(per, 6)) sheets.push(await ceSheet(rows.slice(i, i + Math.min(per, 6))));
+      busy(true, 'Claude 正在看素材、規劃整支影片');
+      const prompt = cePrompt(o, rows); ctl = new AbortController();
+      const plan = await ceSample.json(prompt, { images: sheets, modelTier: o.tier, signal: ctl.signal, cache: false });
+      turns = [{ role: 'user', content: prompt + '\n\n（縮圖之前已經看過；下面是你上次的腳本。）' }, { role: 'assistant', content: JSON.stringify(plan) }];
+      busy(true, '照腳本排進時間線…');
+      const r = await ceApply(plan, map, o); busy(false); show(plan, r);
+    } catch (e) { busy(false); msg.textContent = errText(e); }
+  };
+  $('#ce-revgo').onclick = async () => {
+    const ask = $('#ce-revtext').value.trim(); if (!ask || !turns) return;
+    busy(true, 'Claude 正在修改');
+    try {
+      ctl = new AbortController();
+      const plan = await ceSample.json([...turns, { role: 'user', content: `請照這個修改要求調整剪輯腳本，回傳完整的新 JSON（同樣格式、只回 JSON）：${ask}` }], { modelTier: o.tier, signal: ctl.signal, cache: false });
+      // keep the instructions turn, the latest plan and the last few requests (the conversation must start on a user turn)
+      const rest = [...turns.slice(1), { role: 'user', content: '修改要求：' + ask }, { role: 'assistant', content: JSON.stringify(plan) }].slice(-5);
+      turns = [turns[0], ...(rest[0].role === 'user' ? rest.slice(1) : rest)];
+      const r = await ceApply(plan, map, o); busy(false); show(plan, r); $('#ce-revtext').value = '';
+    } catch (e) { busy(false); msg.textContent = errText(e); }
+  };
+}
+MENUS.File.splice(3, 0, ['🤖 Claude AI Edit', 'Claude 全 AI 剪輯（在 claude.ai 上用）', '', openClaudeEdit]);
+$('#bt-auto').insertAdjacentHTML('afterend', '<button class="tb" id="bt-claude" type="button" title="Claude 全 AI 剪輯" aria-label="Claude 全 AI 剪輯">🤖</button>');
+$('#bt-claude').onclick = openClaudeEdit;
+MISSIONS.push({ id: 'claudeedit', adv: 1, t: () => `<b>Claude 全 AI 剪輯</b>　在 claude.ai 打開練習室，按上方的 🤖，寫一句你想要的影片，讓 Claude 規劃整支影片，再請它修改一次` });
 
 renderMissions();
 applyPlugins(); makeFxThumbs(); makeTitleThumbs(); buildFxLists(); buildCards(); renderMissions(); focusPanel('browser'); fullRender(); updatePlayBtn();

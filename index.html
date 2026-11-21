@@ -4322,7 +4322,8 @@ function aiGet(kind) {
   AI.p[kind] = (async () => {
     const v = await aiInit(), M = AI.mod;
     const make = (delegate, path) => {
-      const o = { baseOptions: { modelAssetPath: path || AI_MODELS[kind], delegate }, runningMode: 'IMAGE' };
+      const src = path instanceof Uint8Array ? { modelAssetBuffer: path } : { modelAssetPath: path || AI_MODELS[kind] };
+      const o = { baseOptions: { ...src, delegate }, runningMode: 'IMAGE' };
       if (kind === 'cls') return M.ImageClassifier.createFromOptions(v, { ...o, maxResults: 5 });
       if (kind === 'det') return M.ObjectDetector.createFromOptions(v, { ...o, maxResults: 6, scoreThreshold: .35 });
       if (kind === 'seg') return M.ImageSegmenter.createFromOptions(v, { ...o, outputConfidenceMasks: true, outputCategoryMask: false });
@@ -4331,7 +4332,9 @@ function aiGet(kind) {
     // the small int8 classifier / detector only work on the CPU path (on the GPU they load but return nothing)
     let t;
     if (kind === 'seg') { // person cutout: the copy next to the page first
-      for (const p of [new URL(AI_LOCAL + '/selfie_segmenter.tflite', location.href).href, AI_MODELS.seg]) { try { t = await make('CPU', p); break; } catch (e) { } }
+      // 1) the model file next to the page  2) the same model stored as base64 text (where .tflite files can't be served)  3) the CDN
+      const fromB64 = async () => { const r = await fetch(new URL(AI_LOCAL + '/selfie_segmenter.b64.txt', location.href)); if (!r.ok) throw 0; const s = atob((await r.text()).trim()); const b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); return b; };
+      for (const p of [() => new URL(AI_LOCAL + '/selfie_segmenter.tflite', location.href).href, fromB64, () => AI_MODELS.seg]) { try { t = await make('CPU', await p()); break; } catch (e) { } }
       if (!t) throw new Error('AI 人物去背模型載入失敗');
     } else { try { t = await make(kind === 'face' ? 'GPU' : 'CPU'); } catch (e) { t = await make('CPU'); } }
     AI[kind] = t; AI.state[kind] = 'ready'; return t;
